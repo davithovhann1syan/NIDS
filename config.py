@@ -13,6 +13,15 @@ LOG_PATH = "logs/nids.log"
 ALERT_COOLDOWN_SEC  = 30
 NOTIFY_MIN_SEVERITY = "HIGH"
 
+# Severity rank — single source of truth used by correlator and notifier.
+# Higher number = higher priority.
+SEVERITY_RANK: dict[str, int] = {
+    "LOW":      0,
+    "MEDIUM":   1,
+    "HIGH":     2,
+    "CRITICAL": 3,
+}
+
 # Notifier — loaded from environment, never hardcoded
 SMTP_HOST     = os.getenv("SMTP_HOST")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", 587))

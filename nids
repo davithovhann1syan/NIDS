@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run the NIDS from anywhere. Always executes from the project root
+# so relative paths (logs/nids.log, config.py) resolve correctly.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec sudo "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/main.py" "$@"

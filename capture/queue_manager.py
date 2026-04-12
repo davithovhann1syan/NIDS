@@ -30,9 +30,15 @@ class PacketQueue:
             with self._stats_lock:
                 self._drop_count += 1
 
-    def get(self) -> object:
-        """Dequeue a packet, blocking until one is available."""
-        return self._queue.get()
+    def get(self, timeout: float | None = None) -> object:
+        """Dequeue a packet, blocking until one is available or timeout expires.
+
+        Raises queue.Empty if timeout expires before a packet arrives.
+
+        Args:
+            timeout: Seconds to wait before raising queue.Empty. None = block forever.
+        """
+        return self._queue.get(timeout=timeout)
 
     def task_done(self) -> None:
         """Signal that a formerly enqueued packet has been processed."""
