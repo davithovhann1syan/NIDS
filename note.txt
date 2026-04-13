@@ -1,0 +1,312 @@
+================================================================================
+  NIDS — Network Intrusion Detection System
+  Project Notes
+  Last updated: 2026-04-13
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+  WHAT THIS PROJECT IS
+────────────────────────────────────────────────────────────────────────────────
+
+A Python-based Network Intrusion Detection System (NIDS) that captures live
+packets from a network interface, extracts features, runs them through a
+rule-based detection engine, deduplicates alerts, writes structured logs, and
+optionally sends email/Slack notifications for high-severity events.
+
+Designed for low-to-medium traffic internal network segments (< 100 Mbps).
+Target: a home or small office network running Linux.
+
+It is purely rule-based — no machine learning, no anomaly detection.
+Detection quality is determined entirely by the quality of the signature rules.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  TECHNOLOGIES USED
+────────────────────────────────────────────────────────────────────────────────
+
+Language:       Python 3.10+
+                Uses match/case (structural pattern matching) for protocol
+                dispatch in the packet extractor.
+
+Scapy (>=2.5)   Packet capture and parsing library.
+                Used in: capture/sniffer.py, parser/extractor.py
+                Purpose: raw socket sniffing via sniff(), and parsing
+                Ether/IP/TCP/UDP/ICMP packet layers.
+                Requires root privileges for live capture.
+
+Flask (>=3.0)   Web microframework.
+                Used in: dashboard/app.py (NOT YET IMPLEMENTED)
+                Purpose: serve the web dashboard that reads nids.log and
+                displays alerts in a browser.
+
+python-dotenv   Environment variable loader.
+                Used in: main.py (loaded before config.py is imported)
+                Purpose: reads a .env file so credentials (SMTP, Slack)
+                never need to be hardcoded. In production, real environment
+                variables are used instead.
+
+smtplib         Python standard library — SMTP email client.
+                Used in: alerting/notifier.py
+                Purpose: send email alerts for HIGH/CRITICAL events.
+
+urllib.request  Python standard library — HTTP client.
+                Used in: alerting/notifier.py
+                Purpose: POST alerts to a Slack incoming webhook URL.
+
+threading       Python standard library — OS-level threads.
+                Used in: main.py, capture/queue_manager.py,
+                          alerting/deduplicator.py
+                Purpose: Thread 1 (sniffer) and Thread 2 (analysis loop)
+                run concurrently. Locks protect shared state.
+
+queue.Queue     Python standard library — thread-safe FIFO queue.
+                Used in: capture/queue_manager.py
+                Purpose: decouples the sniffer thread from the analysis
+                thread. Bounded at 10,000 packets; drops on overflow rather
+                than consuming unbounded memory.
+
+json            Python standard library.
+                Used in: alerting/logger.py, alerting/notifier.py,
+                          dashboard/app.py (planned)
+                Purpose: serialize alerts as JSON lines in nids.log.
+
+signal          Python standard library.
+                Used in: main.py
+                Purpose: catch SIGHUP (sent by logrotate) to reopen the
+                log file after rotation, without restarting the process.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  HOW THE FLOW WORKS (PIPELINE)
+────────────────────────────────────────────────────────────────────────────────
+
+  [Network Interface]
+        │
+        │  raw packets (Scapy Packet objects)
+        ▼
+  capture/sniffer.py          Thread 1
+        │  sniff() loop with BPF filter "ip"
+        │  calls put_nowait() — drops if queue full
+        ▼
+  capture/queue_manager.py    (shared between Thread 1 and Thread 2)
+        │  bounded Queue(maxsize=10,000)
+        │  tracks enqueue count, drop count, drop rate
+        ▼
+  parser/extractor.py         Thread 2 (analysis loop in main.py)
+        │  converts raw Scapy packet → FeatureDict
+        │  FeatureDict has fixed schema: timestamp, src_ip, dst_ip,
+        │  protocol, length, ttl, src_port, dst_port, flags,
+        │  flags_int, icmp_type. No key is ever missing.
+        │  raises ValueError for non-IP packets (discarded)
+        ▼
+  detection/sig_detector.py   Thread 2
+        │  evaluates all 72 rules against the FeatureDict
+        │  Pattern rules: single-packet match on conditions dict
+        │  Rate rules: sliding window keyed by (src_ip, rule_name)
+        │              fires when count >= threshold within window_seconds
+        │  returns list[Alert] — may be empty, or multiple alerts
+        ▼
+  detection/correlator.py     Thread 2
+        │  picks the highest-severity alert as the "leader"
+        │  annotates it with also_triggered = names of all other
+        │  rules that fired on the same packet
+        │  returns a single CorrelatedAlert, or None if no alerts
+        ▼
+  alerting/deduplicator.py    Thread 2
+        │  suppresses repeated (rule, src_ip) pairs within 30 seconds
+        │  uses a lock — safe if called from multiple threads
+        │  tracks suppressed_count for stats output
+        ▼
+  alerting/logger.py          Thread 2
+        │  writes one JSON line per alert to logs/nids.log
+        │  only module allowed to write to disk
+        │  line-buffered (no data lost in buffer on crash)
+        │  supports reopen() for logrotate (SIGHUP)
+        ▼
+  alerting/notifier.py        Thread 2
+        │  fires only for severity >= HIGH (configurable)
+        │  sends email via SMTP and/or Slack webhook
+        │  credentials loaded from environment only — never hardcoded
+        │  network failures are caught and printed; never crash the thread
+        ▼
+  [logs/nids.log]             append-only JSON lines on disk
+
+  dashboard/app.py            Thread 3 (separate process, NOT YET BUILT)
+        reads nids.log only — completely isolated from detection layer
+        serves a web UI showing live and historical alerts
+
+
+────────────────────────────────────────────────────────────────────────────────
+  DEPENDENCY CHAIN (what imports what)
+────────────────────────────────────────────────────────────────────────────────
+
+  main.py
+    ├── config.py                        (no project imports)
+    ├── capture/queue_manager.py         → config
+    ├── capture/sniffer.py               → config, capture/queue_manager
+    ├── parser/extractor.py              → scapy
+    ├── detection/signatures.py          (no project imports — data only)
+    ├── detection/sig_detector.py        → detection/signatures, parser/extractor
+    ├── detection/correlator.py          → config, detection/signatures,
+    │                                      detection/sig_detector
+    ├── alerting/deduplicator.py         → config, detection/correlator
+    ├── alerting/logger.py               → config, detection/correlator
+    └── alerting/notifier.py             → config, detection/correlator
+
+  dashboard/app.py (planned)
+    └── reads logs/nids.log directly — imports nothing from detection layer
+
+  Rule: no module imports anything "above" it in the pipeline.
+  extractor.py does not import sig_detector.py. logger.py does not
+  import notifier.py. The data flows one way only.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  SIGNATURE RULES (current coverage)
+────────────────────────────────────────────────────────────────────────────────
+
+  Total rules: 72
+  Rule types:  pattern (single-packet match) and rate (sliding window)
+  Severity levels: LOW, MEDIUM, HIGH, CRITICAL
+
+  Categories covered:
+
+    - Reconnaissance: SYN scan, slow scan, null scan, XMAS scan,
+                      FIN scan, ACK scan, Maimon scan, ping sweep,
+                      UDP port scan, OS fingerprinting
+    - Brute Force: SSH, FTP, Telnet, RDP, SMB, HTTP Basic Auth,
+                   IMAP, POP3, SMTP, LDAP, VNC, PostgreSQL, MySQL,
+                   MongoDB, Redis, Elasticsearch, CouchDB, Cassandra,
+                   MSSQL, Oracle
+    - Exploitation: EternalBlue (MS17-010), BlueKeep, PrintNightmare,
+                    Log4Shell, Shellshock, SQL injection over HTTP,
+                    PHP webshell, suspicious outbound ports (C2)
+    - Malware & C2: known C2 ports, DNS tunneling, ICMP tunneling,
+                    IRC botnet, Metasploit default, Cobalt Strike,
+                    Empire, reverse shell ports
+    - Exfiltration: large outbound transfers, high-frequency small
+                    packets, abnormal TTL values, DNS exfiltration
+    - Policy violations: Tor, P2P/BitTorrent, cryptocurrency mining,
+                         open proxy, cleartext protocols (Telnet, FTP),
+                         SNMP sweeps, NTP amplification
+    - Internal threats: lateral movement, SMB spread, ARP spoofing,
+                        internal host sweep, RPC abuse
+
+
+────────────────────────────────────────────────────────────────────────────────
+  WHAT IS COMPLETE
+────────────────────────────────────────────────────────────────────────────────
+
+  [x] config.py                 — single source of truth for all tunables
+  [x] capture/sniffer.py        — Scapy sniff() loop, BPF filter, stop_event
+  [x] capture/queue_manager.py  — bounded queue, drop tracking, stats
+  [x] parser/extractor.py       — packet → FeatureDict, all protocols
+  [x] detection/signatures.py   — 72 rules across all threat categories
+  [x] detection/sig_detector.py — pattern + rate engine, sliding windows
+  [x] detection/correlator.py   — severity ranking, also_triggered metadata
+  [x] alerting/deduplicator.py  — cooldown suppression, purge_expired
+  [x] alerting/logger.py        — JSON-lines writer, SIGHUP reopen, close
+  [x] alerting/notifier.py      — SMTP email + Slack webhook dispatch
+  [x] main.py                   — threading, graceful shutdown, queue drain,
+                                  live alert printing, stats interval
+  [x] nids (shell script)       — run with `nids --interface wlan0`
+  [x] scripts/gen_traffic.py   — malicious traffic generator for rule validation
+  [x] requirements.txt          — all dependencies pinned
+
+
+────────────────────────────────────────────────────────────────────────────────
+  WHAT IS LEFT TO DO — WEB DASHBOARD (GUI)
+────────────────────────────────────────────────────────────────────────────────
+
+  dashboard/app.py              EMPTY — needs to be built
+  dashboard/templates/index.html  EMPTY — needs to be built
+
+  The dashboard is deliberately isolated: it reads nids.log only and
+  has no connection to the detection layer.
+
+  --- Backend (dashboard/app.py) ---
+
+  1. Flask app with three routes:
+
+     GET /
+       Renders index.html — the main dashboard page.
+
+     GET /api/alerts
+       Returns last N alerts from nids.log as JSON.
+       Accepts query params: ?limit=100&severity=HIGH&since=<timestamp>
+       Reads the log file tail-first (newest alerts first).
+
+     GET /api/stats
+       Returns aggregate counts: total alerts, by severity, by rule,
+       by top source IPs, alerts in last 1h/24h.
+
+  2. Log reader utility:
+     - Read nids.log line by line, parse each as JSON.
+     - Handle missing/corrupt lines gracefully (skip with try/except).
+     - For large log files, only read the last N lines (use file seek).
+
+  --- Frontend (dashboard/templates/index.html) ---
+
+  3. Alert table (live feed):
+     - Columns: timestamp, severity, rule, src_ip, dst_ip, dst_port, count
+     - Color-coded rows: CRITICAL=red, HIGH=orange, MEDIUM=yellow, LOW=blue
+     - Auto-refreshes every 5 seconds via fetch('/api/alerts')
+     - Filter bar: by severity, by rule name, by IP
+
+  4. Stats bar at the top:
+     - Total alerts today
+     - CRITICAL count, HIGH count
+     - Top attacking IP
+     - Queue drop rate (read from a /api/health endpoint)
+
+  5. Charts (optional, using Chart.js — no npm needed, CDN link):
+     - Alerts over time (line chart, last 24h, bucketed by hour)
+     - Alerts by severity (doughnut chart)
+     - Top 10 source IPs (horizontal bar chart)
+     - Top 10 triggered rules (horizontal bar chart)
+
+  6. Auto-scroll / pause:
+     - New alerts appear at the top.
+     - Pause button stops auto-refresh so the analyst can read.
+
+  --- To run the dashboard ---
+
+     python -m dashboard.app       (separate terminal, no root needed)
+     then open http://localhost:5000 in a browser
+
+  --- Other things still missing for a "complete" NIDS ---
+
+  [ ] scripts/replay_pcap.py      — feed a saved .pcap through the engine
+                                    (useful for testing rules offline)
+  [ ] .env.example                — template showing which env vars to set
+  [ ] .gitignore                  — verify logs/ and .env are excluded
+  [ ] systemd service file        — run NIDS as a background service on boot
+  [ ] logrotate config            — rotate nids.log daily, keep 30 days
+  [ ] Rate-limit notifier         — prevent email floods during sustained attacks
+  [ ] IP whitelist in config      — suppress alerts for known-safe IPs
+                                    (e.g. your own router, monitoring tools)
+
+
+────────────────────────────────────────────────────────────────────────────────
+  HOW TO RUN
+────────────────────────────────────────────────────────────────────────────────
+
+  # Live capture
+  nids --interface wlan0
+  nids --interface wlan0 --stats-interval 10
+
+  # Capture smoke test (verify sniffer + extractor work on real traffic)
+  sudo .venv/bin/python scripts/test_capture.py
+
+  # Traffic generator — craft packets that trigger NIDS signatures (root required)
+  sudo python scripts/gen_traffic.py --list
+  sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_scan
+  sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack brute_force --port 22
+  sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_flood --count 250
+  sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack c2_beacon --port 4444
+
+  # Dashboard (not yet built)
+  python -m dashboard.app
+
+================================================================================
