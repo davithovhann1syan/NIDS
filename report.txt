@@ -1,0 +1,621 @@
+================================================================================
+  NIDS — Network Intrusion Detection System
+  Project Report
+  Author:       Davit Hovhannisyan
+  Last updated: 2026-04-26
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+  1. EXECUTIVE SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+NIDS is a Python-based Network Intrusion Detection System designed for
+low-to-medium traffic internal network segments (< 100 Mbps). It captures live
+packets from a Linux network interface, runs them through a multi-stage rule
+engine, deduplicates and correlates alerts, writes structured logs, sends
+real-time notifications, and exposes a live web dashboard for monitoring and
+investigation.
+
+The system is purely signature-based — no machine learning or statistical
+anomaly detection. Detection quality is determined entirely by the quality and
+coverage of the signature rules. The current ruleset contains 83 rules spanning
+11 threat categories.
+
+Target environment: home or small office network running Linux.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  2. SYSTEM ARCHITECTURE
+────────────────────────────────────────────────────────────────────────────────
+
+The system is structured as a two-thread pipeline with a third daemon thread
+for outbound notifications and a fourth, fully isolated process for the web
+dashboard.
+
+  [Network Interface]
+        │
+        │  raw Scapy Packet objects
+        ▼
+  capture/sniffer.py          Thread 1 — Packet capture
+        │  Scapy sniff() loop, BPF filter "ip", drop-on-full
+        ▼
+  capture/queue_manager.py    Shared state — bounded queue (10,000 packets)
+        │  tracks enqueue count, drop count, drop rate
+        ▼
+  parser/extractor.py         Thread 2 — Analysis loop
+        │  Scapy Packet → FeatureDict
+        │  Fixed schema: timestamp, src_ip, dst_ip, protocol, length,
+        │  ttl, src_port, dst_port, flags, flags_int, icmp_type
+        ▼
+  detection/sig_detector.py   Thread 2
+        │  Evaluates all 83 rules: pattern, rate, multi_destination
+        │  Returns list[Alert] — may be empty or multiple
+        ▼
+  detection/correlator.py     Thread 2
+        │  Picks highest-severity alert as leader
+        │  Annotates with also_triggered (all other fired rules)
+        │  Computes cross-packet threat_score (0–100) per source IP
+        │  Escalates severity on multi-stage attack patterns
+        ▼
+  alerting/deduplicator.py    Thread 2
+        │  Suppresses (rule, src_ip) repeats within 30-second cooldown
+        ▼
+  alerting/logger.py          Thread 2
+        │  Writes one JSON line per alert to logs/nids.log
+        │  Line-buffered; supports SIGHUP log rotation reopen
+        ▼
+  alerting/notifier.py        Thread 3 (daemon) — Notifications
+        │  Batches alerts within a 3-second window
+        │  Sends email (SMTP) and/or Slack webhook for HIGH/CRITICAL
+        ▼
+  [logs/nids.log]             Append-only JSON lines on disk
+
+  dashboard/app.py            Separate process — Web dashboard
+        Reads nids.log only — fully isolated from the detection layer
+        Serves live and historical alert data via a Flask REST API
+
+Design principles:
+  - One-way data flow: no module imports anything "above" it in the pipeline.
+  - Shared state is minimized: only the bounded queue crosses thread boundaries.
+  - The dashboard has zero runtime coupling to the detection layer.
+  - Credentials (SMTP, Slack) are loaded from environment variables only.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  3. TECHNOLOGIES USED
+────────────────────────────────────────────────────────────────────────────────
+
+Language        Python 3.10+
+                Uses structural pattern matching (match/case) for protocol
+                dispatch in the packet extractor and condition evaluation
+                in the signature engine.
+
+Scapy ≥ 2.5    Packet capture and parsing.
+                sniff() with BPF filter "ip"; parsing of Ether/IP/TCP/UDP/ICMP
+                layers. Requires root privileges for live capture.
+
+Flask ≥ 3.0    Web microframework for the dashboard REST API and HTML delivery.
+                dashboard/app.py — serves six API endpoints + index.html.
+
+python-dotenv   Loads .env into os.environ before config.py is imported.
+                Allows credentials to be stored outside source control.
+                In production, real environment variables replace the file.
+
+smtplib         Standard library SMTP client.
+                Used by the notifier for email delivery. Maintains a
+                persistent connection and reconnects automatically on
+                stale-socket failures.
+
+urllib.request  Standard library HTTP client.
+                Used by the notifier to POST alerts to a Slack
+                incoming webhook URL.
+
+threading       Standard library OS-level threads.
+                Thread 1: sniffer. Thread 2: analysis loop.
+                Thread 3: notifier daemon.
+
+queue.Queue     Standard library thread-safe FIFO queue.
+                Decouples sniffer from analysis. Bounded at 10,000 packets;
+                drops on overflow to prevent unbounded memory growth.
+
+json            Standard library JSON serialization.
+                All alerts persisted as JSON lines (ndjson) in nids.log.
+                Also used by the dashboard API responses.
+
+signal          Standard library signal handling.
+                Catches SIGHUP (sent by logrotate) to reopen nids.log
+                after rotation without restarting the process.
+
+collections     Standard library — defaultdict, deque.
+                Sliding-window state for rate and multi_destination rules
+                is stored as deques keyed by (src_ip, rule_name).
+
+typing          Standard library — TypedDict, Literal, NotRequired.
+                All inter-module data structures (FeatureDict, Alert,
+                CorrelatedAlert, Rule subtypes) are fully typed.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  4. CORE FEATURES
+────────────────────────────────────────────────────────────────────────────────
+
+  4.1  PACKET CAPTURE
+  ─────────────────────────────────────────────────────────────────────────────
+  - Live capture via Scapy sniff() on any named Linux network interface.
+  - BPF filter "ip" applied at the kernel level — only IPv4 packets reach
+    Python, reducing userspace overhead on busy interfaces.
+  - Bounded queue with configurable max size (default: 10,000 packets).
+    Overflow drops the arriving packet rather than blocking the sniffer,
+    preventing backpressure from stalling the capture thread.
+  - Drop rate tracked in real time: drop_count / enqueue_count × 100 %.
+  - Graceful shutdown: Ctrl+C sets a stop_event, the sniffer thread exits,
+    and the analysis loop drains any remaining packets before closing the
+    log file.
+
+  4.2  FEATURE EXTRACTION
+  ─────────────────────────────────────────────────────────────────────────────
+  - Converts a raw Scapy Packet object into a flat FeatureDict with a
+    fixed, always-complete schema:
+      timestamp, src_ip, dst_ip, protocol (int), length, ttl,
+      src_port, dst_port, flags (string), flags_int (int), icmp_type
+  - No key is ever absent — missing fields default to None or 0 so
+    condition matching never raises a KeyError.
+  - Raises ValueError for non-IP packets that bypass the BPF filter;
+    these are silently discarded upstream.
+
+  4.3  SIGNATURE DETECTION ENGINE
+  ─────────────────────────────────────────────────────────────────────────────
+  Three rule types:
+
+  pattern         Fires on a single packet that satisfies all conditions.
+                  Stateless — no per-IP memory required.
+                  Example: Null Scan (TCP with flags_int == 0).
+
+  rate            Fires when a single source IP sends ≥ threshold matching
+                  packets within window_seconds.
+                  State: sliding-window deque per (src_ip, rule_name).
+                  Example: SSH Brute Force (≥ 10 SYN packets to port 22
+                  within 10 seconds).
+
+  multi_destination  Fires when a single source IP contacts ≥ threshold
+                  unique values of a tracked field (dst_port or dst_ip)
+                  within window_seconds.
+                  More accurate than raw packet counts for scan detection —
+                  a client opening 50 connections to one port scores 1,
+                  not 50.
+                  Example: Port Scan (Distinct Ports) tracks unique dst_port
+                  values.
+
+  Condition matching supports five forms per field:
+    Equality        "protocol": 6
+    Membership      "dst_port": [80, 443, 8080]
+    Comparison ops  {">=": 1400}  — also >, <, <=, !=
+    Exclusion       {"not_in": [22, 80]}
+    Bitmask         {"mask": 0x02}  — all bits must be set
+
+  Periodic purge: stale sliding-window entries for quiet source IPs are
+  evicted every 2 minutes to prevent unbounded memory growth during scans.
+
+  4.4  ALERT CORRELATION
+  ─────────────────────────────────────────────────────────────────────────────
+  Per-packet correlation:
+  - All rules that fire on the same packet are collected.
+  - The rule with the highest severity becomes the "leader" of the alert.
+  - All other fired rule names are attached as also_triggered, giving the
+    analyst the full picture in a single log entry.
+
+  Cross-packet threat tracking:
+  - The correlator maintains a 5-minute sliding window of distinct rules
+    fired per source IP.
+  - A threat_score (0–100) is computed: 10 points per distinct rule fired.
+  - Severity escalation on multi-stage attack patterns:
+      3+ distinct rules  (score ≥ 30) → escalate to at least MEDIUM
+      5+ distinct rules  (score ≥ 50) → escalate to at least HIGH
+      8+ distinct rules  (score ≥ 80) → escalate to CRITICAL
+  - An IP that scans, then brute-forces, then beacons to a C2 port will
+    have its alerts automatically escalated to CRITICAL, even if each
+    individual rule fires at MEDIUM.
+
+  MITRE ATT&CK mapping:
+  - Most rules carry a mitre field (e.g. "T1046" for network service
+    scanning) for correlation with the ATT&CK framework.
+
+  4.5  DEDUPLICATION
+  ─────────────────────────────────────────────────────────────────────────────
+  - Each (rule, src_ip) pair has an independent 30-second cooldown timer.
+  - Only the first alert in each window is passed to the logger and
+    notifier; subsequent duplicates are silently counted.
+  - suppressed_count is exposed on the Deduplicator instance for stats.
+  - Expired cooldown entries are purged every 2 minutes alongside the
+    detector's rate state.
+
+  4.6  LOGGING
+  ─────────────────────────────────────────────────────────────────────────────
+  - Every non-duplicate alert is written as one JSON line to logs/nids.log.
+  - Fields per line: timestamp (ISO 8601 UTC), rule, severity, src_ip,
+    dst_ip, dst_port, protocol, correlated, also_triggered, threat_score,
+    and count (rate/multi_destination rules only).
+  - Line-buffered: each line is flushed to disk immediately, so no alert
+    is lost if the process crashes.
+  - SIGHUP reopens the log file without restarting, compatible with the
+    standard logrotate copytruncate / postrotate workflow.
+
+  4.7  NOTIFICATIONS
+  ─────────────────────────────────────────────────────────────────────────────
+  - A dedicated daemon thread handles all outbound I/O so the analysis
+    loop is never blocked by network latency.
+  - Configurable minimum severity (default: HIGH). LOW and MEDIUM alerts
+    are logged but not notified.
+  - Alert batching: alerts arriving within a 3-second window are collapsed
+    into a single notification, preventing email storms during active attacks.
+  - Bounded internal queue (100 slots): when full, the oldest pending alert
+    is evicted. An analyst reading email hours later sees the most recent
+    events, not the first ones from a long-over incident.
+  - Email (SMTP/STARTTLS): persistent connection reused across sends with
+    one automatic reconnect attempt on stale-socket failures.
+  - Slack (incoming webhook): formatted with severity-appropriate emoji,
+    multi-alert batches sent as a single message.
+  - All credentials loaded from environment variables; never hardcoded.
+
+  4.8  WEB DASHBOARD
+  ─────────────────────────────────────────────────────────────────────────────
+  Architecture:
+  - Flask application running as a completely separate process.
+  - Reads nids.log directly — no imports from the detection layer.
+  - Tail-first log reading: seeks from the end of the file, so large logs
+    do not cause memory spikes.
+
+  REST API endpoints:
+    GET /                — serves the dashboard UI (index.html)
+    GET /api/alerts      — last N alerts, newest first
+                           query params: ?limit, ?severity, ?ip, ?rule, ?since
+    GET /api/stats       — aggregate counts: total, today, by_severity,
+                           top 10 source IPs, top 10 triggered rules
+    GET /api/health      — active interface, log file size, rules_active count
+    GET /api/rules       — full rule list with name, severity, type,
+                           category, and MITRE ATT&CK ID
+    GET /api/ip/<ip>     — per-IP investigation: risk score (0–100),
+                           first/last seen timestamps, alert breakdown by
+                           severity and rule, 20 most recent events
+
+  Risk score formula (per IP, from /api/ip):
+    score = min(100,  CRITICAL_count × 20 + HIGH_count × 8
+                    + min(total_alerts × 2, 40))
+
+  Frontend (dashboard/templates/index.html + dashboard/static/):
+  - Live alert table, color-coded by severity:
+      CRITICAL = red, HIGH = orange, MEDIUM = yellow, LOW = blue
+  - Auto-refresh every 5 seconds; Pause button for analyst review
+  - Filter bar: by severity, rule name, source IP
+  - Stats bar: total alerts today, CRITICAL/HIGH counts, top attacking IP
+  - Charts (Chart.js via CDN):
+      Alerts over time (line chart, last 24h, hourly buckets)
+      Alerts by severity (doughnut chart)
+      Top 10 source IPs (horizontal bar chart)
+      Top 10 triggered rules (horizontal bar chart)
+  - Tweaks panel: runtime display settings without page reload
+  - Rule browser: full list of active signatures with category and MITRE ID
+
+  To run:
+    python -m dashboard.app         (separate terminal, no root required)
+    open http://localhost:5000
+
+
+────────────────────────────────────────────────────────────────────────────────
+  5. SIGNATURE RULE COVERAGE
+────────────────────────────────────────────────────────────────────────────────
+
+  Total rules: 83   |   Rule types: pattern, rate, multi_destination
+  Severity levels:  LOW, MEDIUM, HIGH, CRITICAL
+
+  RECONNAISSANCE (15 rules)
+    Port Scan (SYN)                        rate, HIGH,     T1046
+    Port Scan (Distinct Ports)             multi_dest, HIGH, T1046
+    Host Discovery Sweep (Distinct IPs)    multi_dest, HIGH, T1018
+    Null Scan                              pattern, HIGH,  T1046
+    XMAS Scan                              pattern, HIGH,  T1046
+    FIN Scan                               pattern, HIGH,  T1046
+    Maimon Scan                            pattern, MEDIUM, T1046
+    ACK Scan                               pattern, MEDIUM, T1046
+    ICMP Host Sweep (Ping Sweep)           rate, MEDIUM,   T1018
+    UDP Port Scan                          rate, HIGH,     T1046
+    Invalid TCP Flags: SYN+RST             pattern, HIGH
+    Invalid TCP Flags: SYN+FIN             pattern, HIGH
+    Oversized ICMP Packet                  pattern, MEDIUM
+    Low TTL Probe (Traceroute / Evasion)   pattern, LOW
+    TCP SYN with Large Payload             pattern, MEDIUM
+
+  BRUTE FORCE (12 rules)
+    SSH Brute Force                        rate, HIGH,     T1110
+    RDP Brute Force                        rate, HIGH,     T1110
+    FTP Brute Force                        rate, MEDIUM,   T1110
+    Telnet Brute Force                     rate, MEDIUM,   T1110
+    SMTP Auth Brute Force                  rate, MEDIUM,   T1110
+    IMAP Brute Force                       rate, MEDIUM,   T1110
+    POP3 Brute Force                       rate, MEDIUM,   T1110
+    VNC Brute Force                        rate, HIGH,     T1110
+    MySQL Brute Force                      rate, HIGH,     T1110
+    PostgreSQL Brute Force                 rate, HIGH,     T1110
+    MSSQL Brute Force                      rate, HIGH,     T1110
+    Kerberos Brute Force (AS-REP/Spray)    rate, HIGH,     T1558
+
+  DENIAL OF SERVICE (8 rules)
+    SYN Flood                              rate, CRITICAL, T1498
+    ICMP Flood                             rate, HIGH,     T1498
+    UDP Flood                              rate, HIGH,     T1498
+    RST Flood                              rate, MEDIUM,   T1498
+    ACK Flood                              rate, MEDIUM,   T1498
+    DNS Amplification Attack               pattern, HIGH,  T1498
+    NTP Amplification Attack               pattern, HIGH,  T1498
+    Memcached Exposed (DDoS Amplification) pattern, HIGH
+
+  SUSPICIOUS SERVICES (8 rules)
+    Telnet Attempt                         pattern, MEDIUM, T1021
+    FTP Cleartext Login                    pattern, LOW,   T1021
+    rlogin / rsh Attempt                   pattern, HIGH,  T1021
+    TFTP Access                            pattern, LOW
+    SNMP Access (v1/v2)                    pattern, LOW,   T1046
+    NFS Access                             pattern, LOW,   T1039
+    LLMNR Traffic (Possible MITM)          pattern, MEDIUM, T1557
+    SSDP / UPnP Discovery                  pattern, LOW
+
+  MALWARE & C2 (8 rules)
+    Known C2 / Backdoor Port               pattern, CRITICAL, T1571
+    Possible Reverse Shell (High Port)     pattern, HIGH,  T1571
+    IRC Traffic (Possible Botnet C2)       pattern, HIGH,  T1071
+    Tor Default Port                       pattern, MEDIUM, T1090
+    DNS over Non-Standard Port (Tunneling) pattern, HIGH,  T1071
+    Cobalt Strike Default Beacon Port      pattern, CRITICAL, T1071
+    Netcat / Bind Shell Default Port       pattern, HIGH,  T1059
+    Aggressive Outbound SYN Rate           rate, HIGH,     T1071
+
+  LATERAL MOVEMENT (6 rules)
+    SMB Access (Possible Lateral Movement) pattern, MEDIUM, T1021
+    SMB Sweep (Ransomware Propagation)     multi_dest, CRITICAL, T1021
+    WinRM Access (Possible Lateral Move)   pattern, HIGH,  T1021
+    DCOM / RPC Access                      pattern, MEDIUM, T1021
+    NetBIOS Name / Datagram Service        pattern, LOW,   T1046
+    LDAP Enumeration                       rate, MEDIUM,   T1087
+
+  EXPOSED SERVICES (9 rules)
+    Log4Shell Target Port (8080/8443)      pattern, HIGH,  T1190
+    Redis Exposed (No Auth)                pattern, HIGH,  T1190
+    Elasticsearch Exposed                  pattern, HIGH,  T1190
+    MongoDB Exposed                        pattern, HIGH,  T1190
+    Docker API Exposed                     pattern, CRITICAL, T1610
+    Kubernetes API Exposed                 pattern, CRITICAL, T1610
+    etcd Exposed                           pattern, CRITICAL, T1190
+    CouchDB Exposed                        pattern, HIGH,  T1190
+    Hadoop / HDFS Exposed                  pattern, HIGH,  T1190
+
+  EXFILTRATION (4 rules)
+    DNS Query Flood UDP (DNS Tunneling)    rate, HIGH,     T1048
+    DNS Query Flood TCP (DNS Tunneling)    rate, HIGH,     T1048
+    ICMP Exfiltration (Large Volume)       rate, HIGH,     T1048
+    FTP Data Channel (Possible Exfil)      pattern, MEDIUM, T1048
+
+  INFRASTRUCTURE ATTACKS (6 rules)
+    BGP Connection Attempt                 pattern, HIGH,  T1557
+    OSPF Injection                         pattern, HIGH,  T1557
+    EIGRP Traffic                          pattern, MEDIUM
+    GRE Tunnel Traffic                     pattern, MEDIUM, T1572
+    IPv6-in-IPv4 Tunnel                    pattern, MEDIUM, T1572
+    ICMP Redirect (Routing Manipulation)   pattern, HIGH,  T1557
+
+  ICS / SCADA (4 rules)
+    Modbus Access (ICS Protocol)           pattern, HIGH,  T1046
+    DNP3 Access (ICS Protocol)             pattern, HIGH,  T1046
+    EtherNet/IP Access (ICS Protocol)      pattern, HIGH,  T1046
+    BACnet Access (Building Automation)    pattern, MEDIUM, T1046
+
+  POLICY VIOLATIONS (3 rules)
+    Proxy / Anonymizer Port                pattern, LOW,   T1090
+    P2P / BitTorrent Port                  pattern, LOW
+    Cryptocurrency Mining Pool             pattern, MEDIUM, T1496
+
+
+────────────────────────────────────────────────────────────────────────────────
+  6. CONFIGURATION & DEPLOYMENT
+────────────────────────────────────────────────────────────────────────────────
+
+  config.py — single source of truth for all tunables:
+    INTERFACE            default network interface (env: INTERFACE)
+    QUEUE_MAXSIZE        10,000 packets
+    LOG_PATH             logs/nids.log
+    ALERT_COOLDOWN_SEC   30 seconds
+    NOTIFY_MIN_SEVERITY  HIGH (alerts below this are not sent)
+    SEVERITY_RANK        LOW=0, MEDIUM=1, HIGH=2, CRITICAL=3
+    SMTP_HOST/PORT/USER/PASS  loaded from environment
+    SLACK_WEBHOOK        loaded from environment
+    ALERT_EMAIL          loaded from environment
+
+  Running the system:
+    # Live capture
+    nids --interface wlan0
+    nids --interface wlan0 --stats-interval 10
+
+    # Smoke test (verify sniffer + extractor on real traffic)
+    sudo .venv/bin/python scripts/test_capture.py
+
+    # Traffic generator (root required) — triggers NIDS signatures
+    sudo python scripts/gen_traffic.py --list
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_scan
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack brute_force --port 22
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_flood --count 250
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack c2_beacon --port 4444
+
+    # Analyze a saved .pcap file offline (no root needed)
+    python scripts/replay_pcap.py --file capture.pcap
+    python scripts/replay_pcap.py --file capture.pcap --output alerts.json --quiet
+
+    # Dashboard (separate terminal, no root needed)
+    python -m dashboard.app
+    # open http://localhost:5000
+
+  Completed components:
+    [x] config.py
+    [x] capture/sniffer.py
+    [x] capture/queue_manager.py
+    [x] parser/extractor.py
+    [x] detection/signatures.py       — 83 rules
+    [x] detection/sig_detector.py     — pattern + rate + multi_destination engine
+    [x] detection/correlator.py       — per-packet and cross-packet correlation
+    [x] alerting/deduplicator.py
+    [x] alerting/logger.py
+    [x] alerting/notifier.py          — batched email + Slack, daemon thread
+    [x] main.py                       — threading, graceful shutdown, queue drain
+    [x] nids (shell script)           — `nids --interface wlan0`
+    [x] scripts/gen_traffic.py        — traffic generator for rule validation
+    [x] requirements.txt
+    [x] setup.sh
+    [x] .gitignore
+    [x] dashboard/app.py              — Flask backend, 6 API endpoints
+    [x] dashboard/templates/          — full web UI with charts and filter bar
+    [x] scripts/replay_pcap.py        — offline pcap analysis with full threat report
+
+
+────────────────────────────────────────────────────────────────────────────────
+  7. KNOWN LIMITATIONS
+────────────────────────────────────────────────────────────────────────────────
+
+  - IPv4 only. The BPF filter "ip" excludes IPv6 traffic entirely. An
+    attacker on a dual-stack network can evade detection by using IPv6.
+
+  - Single interface. The sniffer binds to one interface per process. A
+    multi-homed host requires running multiple instances.
+
+  - Rule-based only. There is no behavioral baseline or statistical anomaly
+    detection. Novel attacks that do not match any signature are invisible.
+
+  - Signature false positives. Rate rules (e.g. Port Scan (SYN)) can fire
+    on legitimate high-traffic clients. Thresholds are tuned conservatively
+    but will need adjustment for busy environments.
+
+  - No rule hot-reload. Adding or editing signatures requires a process
+    restart.
+
+  - Dashboard has no authentication. Anyone with network access to port 5000
+    can read alert data. Running it on a loopback or behind a firewall is
+    strongly advised.
+
+  - No HTTPS. Dashboard traffic is unencrypted.
+
+  - No rule hot-reload from dashboard. Signatures can only be edited by
+    modifying detection/signatures.py and restarting the process.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  8. FUTURE IMPROVEMENTS
+────────────────────────────────────────────────────────────────────────────────
+
+  NEAR-TERM (operational gaps)
+
+  [ ] .env.example
+        A documented template listing every required environment variable
+        (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SLACK_WEBHOOK,
+        ALERT_EMAIL, INTERFACE) with example values and brief explanations.
+
+  [ ] systemd service file
+        Run NIDS as a background service on boot. The unit file should
+        specify: ExecStart path, User=root (required for raw sockets),
+        Restart=on-failure, and StandardOutput/Error to journald.
+
+  [ ] logrotate configuration
+        Rotate logs/nids.log daily, compress, keep 30 days. Use a
+        postrotate stanza that sends SIGHUP to the NIDS process so the
+        logger reopens the file (already supported in alerting/logger.py).
+
+  [ ] Notifier rate-limit
+        The notifier already batches alerts within a 3-second window,
+        but a sustained multi-hour attack can still produce hundreds of
+        batched emails. Add a maximum notifications-per-hour cap so the
+        analyst's inbox does not flood.
+
+  [ ] IP allowlist in config
+        Suppress alerts originating from known-safe source IPs such as
+        your router, a monitoring host, or a vulnerability scanner you
+        control. A simple list in config.py checked before the deduplicator
+        would suffice.
+
+  MEDIUM-TERM (capability improvements)
+
+  [ ] IPv6 support
+        Change the BPF filter from "ip" to "ip or ip6" and extend
+        extractor.py to handle IPv6 headers. The signatures would then
+        also work for IPv6 flows.
+
+  [ ] Multi-interface support
+        Allow a single NIDS process to sniff multiple interfaces
+        simultaneously (e.g. wlan0 and eth0) by running one sniffer
+        thread per interface, all writing to the same bounded queue.
+
+  [ ] GeoIP enrichment
+        Annotate alerts with the country code and ASN of the source IP
+        using a local MaxMind GeoLite2 database. Adds context to the
+        dashboard without requiring an external API call per packet.
+
+  [ ] SIEM integration (syslog / CEF output)
+        Write alerts to a syslog socket or in CEF (Common Event Format)
+        in addition to JSON lines. Enables forwarding to Splunk, ELK,
+        or any syslog-capable SIEM without post-processing.
+
+  [ ] Dashboard authentication
+        Add HTTP Basic Auth or token-based authentication to the Flask
+        app so alert data is not readable by anyone on the local network.
+        Even a single shared password behind python-dotenv would be a
+        meaningful improvement.
+
+  [ ] HTTPS for dashboard
+        Wrap Flask with a self-signed certificate (or use a reverse
+        proxy such as Nginx with Let's Encrypt) so dashboard traffic
+        is encrypted.
+
+  [ ] Rule hot-reload
+        Add a SIGUSR1 handler that reloads detection/signatures.py at
+        runtime without stopping packet capture. Would allow adding new
+        rules to a running deployment without a service restart.
+
+  [ ] Alert export
+        Add a dashboard button to export the current filtered view as
+        a CSV file. Analysts often need to pull data into spreadsheets
+        or share it with colleagues who do not have dashboard access.
+
+  LONG-TERM (architectural additions)
+
+  [ ] Anomaly detection layer
+        Complement the signature engine with a lightweight statistical
+        baseline (e.g. exponential moving average of packet rate per
+        source IP, or port entropy per time window). Anomaly alerts
+        would surface novel attack patterns that no rule currently covers,
+        at the cost of a higher false-positive rate that would need tuning.
+
+  [ ] Machine learning classifier
+        Train a binary classifier (e.g. Random Forest or a small MLP)
+        on labeled FeatureDicts to flag suspicious packets that bypass
+        all signature rules. Requires a labeled pcap dataset and adds a
+        dependency on scikit-learn or PyTorch.
+
+  [ ] Packet capture to PCAP
+        Optionally write raw captured packets to a rotating PCAP file
+        alongside the JSON alert log. Allows full forensic replay of an
+        incident after the fact.
+
+  [ ] Distributed mode
+        Support multiple sensor nodes each running the capture and
+        detection pipeline, forwarding correlated alerts to a central
+        aggregator that runs the dashboard. Useful for monitoring
+        multiple network segments.
+
+  [ ] Custom rule editor in dashboard
+        A form in the web UI to define, test, and activate new signatures
+        without editing Python files. Rules would be serialized to a
+        user-rules.json file and merged with the built-in SIGNATURES list
+        on startup.
+
+  [ ] MITRE ATT&CK coverage report
+        Generate a heatmap overlay on the ATT&CK Navigator matrix showing
+        which techniques the current ruleset covers, and which are blind
+        spots. Useful for identifying gaps before a security assessment.
+
+================================================================================

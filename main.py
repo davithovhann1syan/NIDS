@@ -11,12 +11,13 @@ from dotenv import load_dotenv
 
 load_dotenv()  # load .env into os.environ before config reads it
 
+import allowlist
 import config
 from capture.queue_manager import PacketQueue
 from capture.sniffer import start_sniffing
 from parser.extractor import extract
 from detection.sig_detector import SignatureDetector
-from detection.correlator import correlate
+from detection.correlator import Correlator
 from alerting.deduplicator import Deduplicator
 from alerting.logger import Logger
 from alerting.notifier import Notifier
@@ -63,6 +64,7 @@ def main() -> None:
     # ── Component setup ───────────────────────────────────────────────────────
     pkt_queue  = PacketQueue()
     detector   = SignatureDetector()
+    correlator = Correlator()
     dedup      = Deduplicator()
     logger     = Logger()
     notifier   = Notifier()
@@ -112,9 +114,13 @@ def main() -> None:
             except ValueError:
                 continue
 
+            # Skip packets from allowlisted source IPs.
+            if allowlist.is_allowlisted(features["src_ip"]):
+                continue
+
             # Detect → correlate → deduplicate → log → notify.
             raw_alerts = detector.process(features)
-            alert      = correlate(raw_alerts)
+            alert      = correlator.correlate(raw_alerts)
 
             if alert is None:
                 continue
@@ -136,9 +142,12 @@ def main() -> None:
             # ── Periodic maintenance ──────────────────────────────────────────
             now = time.monotonic()
 
-            # Purge expired dedup entries every 2 minutes to bound memory usage.
+            # Purge expired entries every 2 minutes to bound memory usage.
             if now - last_purge >= 120:
                 dedup.purge_expired()
+                detector.purge_stale()
+                correlator.purge_old_history()
+                allowlist.reload()
                 last_purge = now
 
             # Stats output.
@@ -159,7 +168,7 @@ def main() -> None:
                 try:
                     features   = extract(pkt)
                     raw_alerts = detector.process(features)
-                    alert      = correlate(raw_alerts)
+                    alert      = correlator.correlate(raw_alerts)
                     if alert and not dedup.is_duplicate(alert):
                         logger.log(alert)
                         # notifier intentionally skipped during shutdown drain

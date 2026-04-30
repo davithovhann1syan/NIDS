@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 
 # Capture
-INTERFACE     = "eth0"
+INTERFACE     = os.getenv("INTERFACE", "wlan0")
 QUEUE_MAXSIZE = 10_000
 
 # Paths
-LOG_PATH = "logs/nids.log"
+LOG_PATH       = "logs/nids.log"
+ALLOWLIST_PATH = "allowlist.json"
 
 # Alerting
 ALERT_COOLDOWN_SEC  = 30

@@ -1,44 +1,61 @@
 """
-Throwaway script to verify the capture module works end-to-end.
-Captures 10 packets from wlan0, prints their summaries, then exits cleanly.
+Verify the capture + extraction pipeline end-to-end.
+Captures N packets from the specified interface, prints their features,
+then exits cleanly with a protocol breakdown summary.
 
 Run with:
-    sudo python scripts/test_capture.py
+    sudo .venv/bin/python scripts/test_capture.py
+    sudo .venv/bin/python scripts/test_capture.py --interface eth0 --count 50
 """
 from __future__ import annotations
 
+import argparse
 import sys
-import threading
-import time
+from pathlib import Path
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))  # project root
+sys.path.insert(0, str(Path(__file__).parent.parent))  # project root
 
+import config
 from capture.queue_manager import PacketQueue
 from capture.sniffer import start_sniffing
-from parser.extractor import extract, FeatureDict
-
-INTERFACE   = "wlan0"
-PACKET_GOAL = 100
+from parser.extractor import FeatureDict, extract
+import threading
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Verify the NIDS capture + extraction pipeline.",
+    )
+    parser.add_argument(
+        "--interface", "-i",
+        default=config.INTERFACE,
+        help=f"Network interface to capture on (default: {config.INTERFACE})",
+    )
+    parser.add_argument(
+        "--count", "-n",
+        type=int, default=100,
+        metavar="N",
+        help="Number of packets to capture before exiting (default: 100)",
+    )
+    args = parser.parse_args()
+
     pkt_queue  = PacketQueue()
     stop_event = threading.Event()
 
     sniffer_thread = threading.Thread(
         target=start_sniffing,
         args=(pkt_queue, stop_event),
-        kwargs={"interface": INTERFACE},
+        kwargs={"interface": args.interface},
         daemon=True,
     )
     sniffer_thread.start()
-    print(f"Capturing {PACKET_GOAL} packets on {INTERFACE}...\n")
+    print(f"Capturing {args.count} packets on {args.interface}...\n")
 
     captured     = 0
     parse_errors = 0
     proto_counts: dict[str, int] = {"TCP": 0, "UDP": 0, "ICMP": 0, "Other": 0}
 
-    while captured < PACKET_GOAL:
+    while captured < args.count:
         pkt = pkt_queue.get()
         pkt_queue.task_done()
 

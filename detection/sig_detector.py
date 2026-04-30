@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict, deque
 from typing import NotRequired, TypedDict
 
 from detection.signatures import SIGNATURES, Rule, Severity
 from parser.extractor import FeatureDict
+
+
+_PROTO_NAME: dict[int, str] = {1: "ICMP", 6: "TCP", 17: "UDP"}
 
 
 class Alert(TypedDict):
@@ -13,7 +17,8 @@ class Alert(TypedDict):
     src_ip:   str
     dst_ip:   str
     dst_port: int | None
-    count:    NotRequired[int]   # present only for rate rule alerts
+    protocol: str           # "TCP", "UDP", "ICMP", or numeric string for other IP protocols
+    count:    NotRequired[int]
 
 
 class SignatureDetector:
@@ -30,6 +35,14 @@ class SignatureDetector:
         self._rules = rules
         # Sliding window buckets: {(src_ip, rule_name): deque of packet timestamps}
         self._rate_state: defaultdict[tuple[str, str], deque[float]] = defaultdict(deque)
+        # Multi-destination buckets: {(src_ip, rule_name): deque of (timestamp, tracked_value)}
+        self._multidest_state: defaultdict[tuple[str, str], deque[tuple[float, object]]] = defaultdict(deque)
+        # Precomputed window size per rule — used by purge_stale() to avoid O(rules) lookups.
+        self._rule_windows: dict[str, int] = {
+            r["name"]: r["window_seconds"]  # type: ignore[typeddict-item]
+            for r in self._rules
+            if r["type"] in ("rate", "multi_destination")
+        }
 
     def process(self, features: FeatureDict) -> list[Alert]:
         """Evaluate all rules against a feature dict.
@@ -46,13 +59,46 @@ class SignatureDetector:
             match rule["type"]:
                 case "pattern":
                     if self._matches_conditions(rule["conditions"], features):
-                        alerts.append(self._make_pattern_alert(rule, features))
+                        alerts.append(self._build_alert(rule, features))
                 case "rate":
                     alert = self._check_rate(rule, features)
                     if alert is not None:
                         alerts.append(alert)
+                case "multi_destination":
+                    alert = self._check_multi_destination(rule, features)
+                    if alert is not None:
+                        alerts.append(alert)
 
         return alerts
+
+    def purge_stale(self) -> None:
+        """Evict expired sliding-window entries for source IPs that have gone quiet.
+
+        Called periodically from main.py (every ~2 minutes) to prevent _rate_state
+        and _multidest_state from growing unboundedly when many distinct source IPs
+        appear briefly then disappear — common during a scan or DDoS.
+        """
+        now = time.time()
+
+        stale: list[tuple[str, str]] = []
+        for key, bucket in self._rate_state.items():
+            cutoff = now - self._rule_windows.get(key[1], 0)
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+            if not bucket:
+                stale.append(key)
+        for k in stale:
+            del self._rate_state[k]
+
+        stale = []
+        for key, bucket in self._multidest_state.items():
+            cutoff = now - self._rule_windows.get(key[1], 0)
+            while bucket and bucket[0][0] <= cutoff:
+                bucket.popleft()
+            if not bucket:
+                stale.append(key)
+        for k in stale:
+            del self._multidest_state[k]
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -63,8 +109,18 @@ class SignatureDetector:
     ) -> bool:
         """Return True if every condition matches the feature dict.
 
-        Condition values may be a single value (equality check) or a list
-        (membership check). This applies uniformly to all condition keys.
+        Condition values support four forms:
+        - Plain value:  equality check  (e.g. "protocol": 6)
+        - List:         membership check (e.g. "dst_port": [80, 443])
+        - Dict of ops:  comparison operators applied to the feature value:
+            {">":  v}       actual >  v
+            {">=": v}       actual >= v
+            {"<":  v}       actual <  v
+            {"<=": v}       actual <= v
+            {"!=": v}       actual != v
+            {"not_in": []}  actual not in list
+            {"mask": v}     (actual & v) == v  — all bits in v are set in actual
+          Multiple operators in one dict are ANDed together.
         """
         feat: dict[str, object] = features  # type: ignore[assignment]
         for key, expected in conditions.items():
@@ -72,20 +128,45 @@ class SignatureDetector:
             if isinstance(expected, list):
                 if actual not in expected:
                     return False
+            elif isinstance(expected, dict):
+                for op, val in expected.items():
+                    match op:
+                        case ">" | "gt":
+                            if actual is None or actual <= val:  # type: ignore[operator]
+                                return False
+                        case ">=" | "gte":
+                            if actual is None or actual < val:  # type: ignore[operator]
+                                return False
+                        case "<" | "lt":
+                            if actual is None or actual >= val:  # type: ignore[operator]
+                                return False
+                        case "<=" | "lte":
+                            if actual is None or actual > val:  # type: ignore[operator]
+                                return False
+                        case "!=" | "not":
+                            if actual == val:
+                                return False
+                        case "not_in":
+                            if actual in val:
+                                return False
+                        case "mask":
+                            # All bits in val must be set in actual.
+                            if actual is None or (actual & val) != val:  # type: ignore[operator]
+                                return False
             else:
                 if actual != expected:
                     return False
         return True
 
     @staticmethod
-    def _make_pattern_alert(rule: Rule, features: FeatureDict) -> Alert:
-        """Build an Alert dict for a pattern rule match. No count field."""
+    def _build_alert(rule: Rule, features: FeatureDict) -> Alert:
         return Alert(
             rule=rule["name"],
             severity=rule["severity"],
             src_ip=features["src_ip"],
             dst_ip=features["dst_ip"],
             dst_port=features["dst_port"],
+            protocol=_PROTO_NAME.get(features["protocol"], str(features["protocol"])),
         )
 
     def _check_rate(self, rule: Rule, features: FeatureDict) -> Alert | None:
@@ -116,13 +197,10 @@ class SignatureDetector:
         bucket.append(ts)
 
         # Prune timestamps that have fallen outside the window.
-        # Entries at exactly the boundary (ts - window) are considered expired.
         cutoff = ts - window
         while bucket and bucket[0] <= cutoff:
             bucket.popleft()
 
-        # Self-clean: remove the bucket entirely when empty so _rate_state
-        # does not grow unboundedly over long runtimes with many source IPs.
         if not bucket:
             del self._rate_state[key]
             return None
@@ -134,7 +212,57 @@ class SignatureDetector:
                 src_ip=src_ip,
                 dst_ip=features["dst_ip"],
                 dst_port=features["dst_port"],
+                protocol=_PROTO_NAME.get(features["protocol"], str(features["protocol"])),
                 count=len(bucket),
+            )
+
+        return None
+
+    def _check_multi_destination(self, rule: Rule, features: FeatureDict) -> Alert | None:
+        """Evaluate a multi_destination rule.
+
+        Counts unique values of the tracked field (dst_port or dst_ip) from a single
+        source IP within a sliding window.  Fires when the unique count reaches the
+        threshold — more accurate than raw packet counts for detecting real port/host scans.
+
+        Like rate rules, fires on every matching packet once the threshold is crossed;
+        the deduplicator downstream suppresses the repeats.
+        """
+        if not self._matches_conditions(rule["conditions"], features):
+            return None
+
+        src_ip = features["src_ip"]
+        ts     = features["timestamp"]
+        key    = (src_ip, rule["name"])
+        window: int = rule["window_seconds"]  # type: ignore[typeddict-item]
+        track: str  = rule["track"]           # type: ignore[typeddict-item]
+
+        feat: dict[str, object] = features  # type: ignore[assignment]
+        tracked_val = feat.get(track)
+        if tracked_val is None:
+            return None
+
+        bucket = self._multidest_state[key]
+        bucket.append((ts, tracked_val))
+
+        cutoff = ts - window
+        while bucket and bucket[0][0] <= cutoff:
+            bucket.popleft()
+
+        if not bucket:
+            del self._multidest_state[key]
+            return None
+
+        unique_count = len({v for _, v in bucket})
+        if unique_count >= rule["threshold"]:  # type: ignore[typeddict-item]
+            return Alert(
+                rule=rule["name"],
+                severity=rule["severity"],
+                src_ip=src_ip,
+                dst_ip=features["dst_ip"],
+                dst_port=features["dst_port"],
+                protocol=_PROTO_NAME.get(features["protocol"], str(features["protocol"])),
+                count=unique_count,
             )
 
         return None

@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NIDS — PCAP Analysis</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg0:#060810;--bg1:#090c16;--bg2:#0d1220;--bg3:#111828;--bg4:#16202e;--bg5:#1c2a3c;
+  --border:rgba(255,255,255,0.06);--border-md:rgba(255,255,255,0.10);--border-hi:rgba(255,255,255,0.18);
+  --text0:#eef2f8;--text1:#8fa3be;--text2:#4e6278;--text3:#2d3f52;
+  --cyan:#00d4ff;--green:#00dfa0;--red:#ff3355;--orange:#ff7c2a;--amber:#ffbe2e;--blue:#4a8fff;--purple:#9b6fff;
+  --crit:#ff3355;--high:#ff7c2a;--med:#ffbe2e;--low:#4a8fff;
+}
+html,body{height:100%;background:var(--bg0);color:var(--text0);font-family:'Inter',sans-serif;font-size:13px;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:radial-gradient(circle,rgba(0,212,255,0.03) 1px,transparent 1px);background-size:28px 28px}
+::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg5);border-radius:2px}
+button{cursor:pointer;border:none;background:none;color:inherit;font:inherit}
+input,select{font:inherit;color:inherit;background:var(--bg4);border:1px solid var(--border-md);
+  border-radius:6px;padding:5px 10px;outline:none;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(0,212,255,0.10)}
+select option{background:var(--bg3)}
+a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}
+
+/* ── Layout ── */
+#app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh}
+
+/* ── Top bar ── */
+.topbar{
+  position:sticky;top:0;z-index:100;
+  display:flex;align-items:center;gap:12px;padding:0 20px;height:52px;
+  background:var(--bg1);border-bottom:1px solid var(--border);flex-shrink:0
+}
+.topbar-logo{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.topbar-logo svg circle,.topbar-logo svg line{stroke:var(--cyan)}
+.topbar-title{font-size:11px;font-weight:700;color:var(--text0);letter-spacing:.08em;font-family:'JetBrains Mono',monospace}
+.topbar-sub{font-size:9px;color:var(--text2);letter-spacing:.1em;text-transform:uppercase}
+.topbar-divider{width:1px;height:20px;background:var(--border-md);flex-shrink:0}
+.topbar-file{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cyan);font-weight:600}
+.topbar-meta{font-size:10px;color:var(--text2)}
+.topbar-badge{
+  padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;
+  letter-spacing:.06em;background:rgba(0,212,255,0.10);color:var(--cyan);border:1px solid rgba(0,212,255,0.2)
+}
+.topbar-spacer{flex:1}
+.topbar-btn{
+  display:flex;align-items:center;gap:5px;padding:5px 11px;border-radius:6px;
+  background:var(--bg4);border:1px solid var(--border-md);color:var(--text1);
+  font-size:11px;font-weight:500;transition:border-color .15s,color .15s
+}
+.topbar-btn:hover{border-color:var(--border-hi);color:var(--text0)}
+
+/* ── Sticky nav ── */
+.subnav{
+  position:sticky;top:52px;z-index:99;
+  display:flex;align-items:center;gap:2px;padding:0 20px;height:40px;
+  background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0
+}
+.subnav-btn{
+  padding:5px 14px;border-radius:5px;font-size:12px;font-weight:500;
+  color:var(--text2);transition:all .15s
+}
+.subnav-btn:hover{color:var(--text1);background:rgba(255,255,255,0.04)}
+.subnav-btn.active{color:var(--cyan);background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.18)}
+.subnav-spacer{flex:1}
+.subnav-info{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3)}
+
+/* ── Main content ── */
+.main{padding:20px;display:flex;flex-direction:column;gap:20px}
+
+/* ── Sections ── */
+.section{display:flex;flex-direction:column;gap:14px}
+.section-title{font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.1em;text-transform:uppercase}
+
+/* ── Stat cards ── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+  padding:14px 16px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s
+}
+.card:hover{border-color:var(--border-md)}
+.card-label{font-size:9px;font-weight:600;color:var(--text2);letter-spacing:.12em;text-transform:uppercase}
+.card-value{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text0);line-height:1}
+.card-sub{font-size:10px;color:var(--text2)}
+.card.crit{border-color:rgba(255,51,85,0.25);background:rgba(255,51,85,0.04)}
+.card.crit .card-value{color:var(--crit)}
+.card.high{border-color:rgba(255,124,42,0.25);background:rgba(255,124,42,0.04)}
+.card.high .card-value{color:var(--high)}
+.card.med{border-color:rgba(255,190,46,0.20);background:rgba(255,190,46,0.04)}
+.card.med .card-value{color:var(--med)}
+
+/* ── Chart grid ── */
+.chart-grid{display:grid;grid-template-columns:260px 1fr;gap:14px}
+.chart-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.chart-box{
+  background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px
+}
+.chart-box-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.1em;text-transform:uppercase;margin-bottom:14px}
+.chart-wrap{position:relative}
+
+/* ── Verdict banner ── */
+.verdict{
+  display:flex;align-items:center;gap:12px;padding:12px 18px;border-radius:10px;
+  border:1px solid;font-size:13px;font-weight:600
+}
+.verdict.crit{background:rgba(255,51,85,0.07);border-color:rgba(255,51,85,0.3);color:var(--crit)}
+.verdict.high{background:rgba(255,124,42,0.07);border-color:rgba(255,124,42,0.3);color:var(--high)}
+.verdict.med{background:rgba(255,190,46,0.07);border-color:rgba(255,190,46,0.3);color:var(--med)}
+.verdict.low{background:rgba(74,143,255,0.07);border-color:rgba(74,143,255,0.3);color:var(--low)}
+.verdict.clean{background:rgba(0,223,160,0.07);border-color:rgba(0,223,160,0.3);color:var(--green)}
+.verdict-sub{font-size:11px;font-weight:400;color:var(--text1);margin-top:3px}
+
+/* ── Tables ── */
+.table-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.table-header{
+  display:flex;align-items:center;gap:10px;padding:12px 16px;
+  border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px
+}
+.table-header-title{font-size:11px;font-weight:700;color:var(--text1);letter-spacing:.08em}
+.table-header-count{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace}
+.table-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+table{width:100%;border-collapse:collapse}
+thead th{
+  padding:8px 12px;text-align:left;font-size:10px;font-weight:600;color:var(--text2);
+  letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border);
+  background:var(--bg3);white-space:nowrap;cursor:pointer;user-select:none
+}
+thead th:hover{color:var(--text1)}
+thead th.sorted{color:var(--cyan)}
+tbody td{
+  padding:8px 12px;border-bottom:1px solid var(--border);
+  font-size:12px;color:var(--text1);vertical-align:middle
+}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background .1s}
+tbody tr:hover{background:rgba(255,255,255,0.025)!important}
+tbody tr.clickable{cursor:pointer}
+.mono{font-family:'JetBrains Mono',monospace;font-size:11px}
+.table-empty{padding:40px;text-align:center;color:var(--text3);font-size:12px}
+.table-pagination{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 16px;border-top:1px solid var(--border);background:var(--bg3)
+}
+.page-info{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace}
+.page-btns{display:flex;gap:4px}
+.page-btn{
+  padding:4px 9px;border-radius:5px;font-size:11px;
+  background:var(--bg4);border:1px solid var(--border-md);color:var(--text2);transition:all .15s
+}
+.page-btn:hover:not(:disabled){background:var(--bg5);color:var(--text1)}
+.page-btn:disabled{opacity:0.35;cursor:default}
+.page-btn.active{background:rgba(0,212,255,0.1);border-color:rgba(0,212,255,0.3);color:var(--cyan)}
+
+/* ── Severity badges ── */
+.sev{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:4px;
+  font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+.sev.CRITICAL{background:rgba(255,51,85,0.15);color:var(--crit)}
+.sev.HIGH{background:rgba(255,124,42,0.15);color:var(--high)}
+.sev.MEDIUM{background:rgba(255,190,46,0.15);color:var(--med)}
+.sev.LOW{background:rgba(74,143,255,0.15);color:var(--low)}
+
+/* ── Score bar ── */
+.score-bar{display:flex;align-items:center;gap:7px}
+.score-track{flex:1;height:4px;background:var(--bg5);border-radius:2px;overflow:hidden;max-width:60px}
+.score-fill{height:100%;border-radius:2px;transition:width .3s}
+.score-num{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;min-width:26px;text-align:right}
+
+/* ── IP detail panel ── */
+.ip-panel{
+  position:fixed;top:0;right:-420px;bottom:0;width:420px;z-index:200;
+  background:var(--bg1);border-left:1px solid var(--border-md);
+  display:flex;flex-direction:column;transition:right .25s cubic-bezier(.4,0,.2,1);overflow:hidden
+}
+.ip-panel.open{right:0}
+.ip-panel-header{
+  display:flex;align-items:center;gap:10px;padding:16px 18px;
+  border-bottom:1px solid var(--border);flex-shrink:0
+}
+.ip-panel-title{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--text0);flex:1}
+.ip-panel-close{
+  display:flex;align-items:center;justify-content:center;width:28px;height:28px;
+  border-radius:6px;border:1px solid var(--border-md);color:var(--text2);transition:all .15s
+}
+.ip-panel-close:hover{border-color:var(--border-hi);color:var(--text1)}
+.ip-panel-body{flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+.ip-stat-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.ip-stat{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.ip-stat-label{font-size:9px;color:var(--text2);letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+.ip-stat-value{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;color:var(--text0)}
+.ip-section-title{font-size:9px;font-weight:600;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.ip-rule-row{display:flex;align-items:center;justify-content:space-between;
+  padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;gap:8px}
+.ip-rule-row:last-child{border-bottom:none}
+.ip-rule-name{color:var(--text1);flex:1}
+.ip-rule-count{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);flex-shrink:0}
+
+/* ── Overlay ── */
+.overlay{position:fixed;inset:0;z-index:150;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s}
+.overlay.show{opacity:1;pointer-events:auto}
+
+/* ── Timeline section ── */
+.timeline-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px}
+
+/* ── Loading ── */
+.loading{display:flex;align-items:center;justify-content:center;height:60vh;flex-direction:column;gap:16px}
+.loading-dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);animation:ld .8s ease-in-out infinite}
+.loading-dot:nth-child(2){animation-delay:.15s}.loading-dot:nth-child(3){animation-delay:.3s}
+.loading-dots{display:flex;gap:6px}
+@keyframes ld{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
+
+/* ── Responsive ── */
+@media(max-width:900px){.chart-grid{grid-template-columns:1fr}.chart-grid-3{grid-template-columns:1fr}}
+@media(max-width:600px){.cards{grid-template-columns:1fr 1fr}.topbar-meta{display:none}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="loading" id="loading">
+    <div class="loading-dots">
+      <div class="loading-dot"></div>
+      <div class="loading-dot"></div>
+      <div class="loading-dot"></div>
+    </div>
+    <div style="color:var(--text2);font-size:12px;font-family:'JetBrains Mono',monospace">Loading analysis data…</div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay" onclick="closeIpPanel()"></div>
+<div class="ip-panel" id="ipPanel">
+  <div class="ip-panel-header">
+    <span class="ip-panel-title" id="ipPanelTitle">—</span>
+    <button class="ip-panel-close" onclick="closeIpPanel()">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12"><path d="M1 1l12 12M13 1L1 13"/></svg>
+    </button>
+  </div>
+  <div class="ip-panel-body" id="ipPanelBody"></div>
+</div>
+
+<script>
+const SEV_COLORS = {CRITICAL:'#ff3355',HIGH:'#ff7c2a',MEDIUM:'#ffbe2e',LOW:'#4a8fff'};
+const SEV_ORDER  = ['CRITICAL','HIGH','MEDIUM','LOW'];
+let _data = null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+function sevBadge(s){return `<span class="sev ${s}">${esc(s)}</span>`}
+
+function scoreBar(score){
+  const pct = score;
+  const color = score>=80?'var(--crit)':score>=50?'var(--high)':score>=30?'var(--med)':'var(--low)';
+  return `<div class="score-bar">
+    <div class="score-track"><div class="score-fill" style="width:${pct}%;background:${color}"></div></div>
+    <span class="score-num" style="color:${color}">${score}</span>
+  </div>`;
+}
+
+// ── Sections ──────────────────────────────────────────────────────────────────
+let _activeSection = 'overview';
+function showSection(id){
+  _activeSection = id;
+  document.querySelectorAll('.section[data-sec]').forEach(el=>{
+    el.style.display = el.dataset.sec === id ? '' : 'none';
+  });
+  document.querySelectorAll('.subnav-btn').forEach(btn=>{
+    btn.classList.toggle('active', btn.dataset.sec === id);
+  });
+}
+
+// ── Main render ───────────────────────────────────────────────────────────────
+async function init(){
+  const res = await fetch('/api/data');
+  _data = await res.json();
+  $('loading').remove();
+  render(_data);
+}
+
+function render(d){
+  const meta  = d.meta;
+  const bySev = d.by_severity;
+  const total = meta.total_alerts;
+  const uniqueIps = d.top_ips.length;
+
+  document.title = `NIDS — ${meta.pcap_file}`;
+
+  // ── Verdict ──
+  let vClass, vIcon, vText;
+  if(bySev.CRITICAL > 0){
+    vClass='crit'; vIcon='⬛'; vText=`CRITICAL THREATS DETECTED — ${bySev.CRITICAL} critical, ${bySev.HIGH} high alerts`;
+  } else if(bySev.HIGH > 0){
+    vClass='high'; vIcon='⬛'; vText=`HIGH-SEVERITY THREATS DETECTED — ${bySev.HIGH} high alerts`;
+  } else if(bySev.MEDIUM > 0){
+    vClass='med'; vIcon='⬛'; vText=`MEDIUM-SEVERITY ACTIVITY — ${bySev.MEDIUM} medium alerts`;
+  } else if(total > 0){
+    vClass='low'; vIcon='⬛'; vText=`LOW-SEVERITY ACTIVITY — ${bySev.LOW} low alerts`;
+  } else {
+    vClass='clean'; vIcon='✓'; vText='NO THREATS DETECTED — No traffic matched any NIDS signature';
+  }
+
+  const app = $('app');
+  app.innerHTML = `
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="topbar-logo">
+        <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
+          <circle cx="12" cy="12" r="9" stroke-width="1.5"/>
+          <circle cx="12" cy="12" r="5" stroke-width="1" stroke-dasharray="2 2"/>
+          <circle cx="12" cy="12" r="2" fill="#00d4ff"/>
+          <line x1="12" y1="3" x2="12" y2="7" stroke-width="1.5"/>
+          <line x1="21" y1="12" x2="17" y2="12" stroke-width="1.5"/>
+        </svg>
+        <div>
+          <div class="topbar-title">NIDS</div>
+          <div class="topbar-sub">Offline Analysis</div>
+        </div>
+      </div>
+      <div class="topbar-divider"></div>
+      <span class="topbar-file">${esc(meta.pcap_file)}</span>
+      <span class="topbar-badge">OFFLINE</span>
+      <span class="topbar-meta">Analyzed ${esc(meta.analyzed_at)}</span>
+      <div class="topbar-spacer"></div>
+      <button class="topbar-btn" onclick="exportCSV()">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M8 2v8M5 7l3 3 3-3"/><path d="M3 11v2h10v-2"/></svg>
+        Export CSV
+      </button>
+    </div>
+
+    <!-- Sub nav -->
+    <div class="subnav">
+      <button class="subnav-btn active" data-sec="overview" onclick="showSection('overview')">Overview</button>
+      <button class="subnav-btn" data-sec="alerts"   onclick="showSection('alerts')">
+        Alerts
+        ${total>0?`<span style="margin-left:5px;background:var(--red);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;font-family:'JetBrains Mono',monospace">${total}</span>`:''}
+      </button>
+      <button class="subnav-btn" data-sec="attackers" onclick="showSection('attackers')">Attackers</button>
+      <button class="subnav-btn" data-sec="timeline"  onclick="showSection('timeline')">Timeline</button>
+      <div class="subnav-spacer"></div>
+      <span class="subnav-info">${esc(meta.first_ts)} → ${esc(meta.last_ts)}</span>
+    </div>
+
+    <!-- Main -->
+    <div class="main">
+
+      <!-- OVERVIEW -->
+      <div class="section" data-sec="overview">
+        <!-- Verdict -->
+        <div class="verdict ${vClass}">
+          <div>
+            <div>${vText}</div>
+            <div class="verdict-sub">${total} alerts · ${uniqueIps} unique attacker${uniqueIps!==1?'s':''} · ${esc(meta.pcap_file)}</div>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="cards">
+          <div class="card">
+            <div class="card-label">Total Alerts</div>
+            <div class="card-value">${total.toLocaleString()}</div>
+            <div class="card-sub">${uniqueIps} unique attackers</div>
+          </div>
+          <div class="card crit">
+            <div class="card-label">Critical</div>
+            <div class="card-value">${bySev.CRITICAL}</div>
+            <div class="card-sub">${total?((bySev.CRITICAL/total*100).toFixed(1)):'0.0'}% of alerts</div>
+          </div>
+          <div class="card high">
+            <div class="card-label">High</div>
+            <div class="card-value">${bySev.HIGH}</div>
+            <div class="card-sub">${total?((bySev.HIGH/total*100).toFixed(1)):'0.0'}% of alerts</div>
+          </div>
+          <div class="card med">
+            <div class="card-label">Medium</div>
+            <div class="card-value">${bySev.MEDIUM}</div>
+            <div class="card-sub">${total?((bySev.MEDIUM/total*100).toFixed(1)):'0.0'}% of alerts</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Low</div>
+            <div class="card-value">${bySev.LOW}</div>
+            <div class="card-sub">${total?((bySev.LOW/total*100).toFixed(1)):'0.0'}% of alerts</div>
+          </div>
+        </div>
+
+        <!-- Charts row -->
+        <div class="chart-grid">
+          <div class="chart-box">
+            <div class="chart-box-title">Severity Distribution</div>
+            <div class="chart-wrap" style="height:200px">
+              <canvas id="chartSev"></canvas>
+            </div>
+          </div>
+          <div class="chart-box">
+            <div class="chart-box-title">Alert Categories</div>
+            <div class="chart-wrap" style="height:200px">
+              <canvas id="chartCat"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top rules -->
+        <div class="chart-box">
+          <div class="chart-box-title">Top Rules Triggered</div>
+          <div class="chart-wrap" style="height:${Math.max(120, d.top_rules.length * 24)}px">
+            <canvas id="chartRules"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- ALERTS -->
+      <div class="section" data-sec="alerts" style="display:none">
+        <div id="alertsTable"></div>
+      </div>
+
+      <!-- ATTACKERS -->
+      <div class="section" data-sec="attackers" style="display:none">
+        <div id="attackersTable"></div>
+      </div>
+
+      <!-- TIMELINE -->
+      <div class="section" data-sec="timeline" style="display:none">
+        <div class="timeline-box">
+          <div class="chart-box-title">Alert Timeline — by minute</div>
+          <div class="chart-wrap" style="height:260px">
+            <canvas id="chartTimeline"></canvas>
+          </div>
+        </div>
+        <div id="timelineBreakdown"></div>
+      </div>
+
+    </div><!-- /main -->
+  `;
+
+  // Render charts
+  renderSevChart(d);
+  renderCatChart(d);
+  renderRulesChart(d);
+  renderTimelineChart(d);
+
+  // Render tables
+  renderAlertsTable(d.alerts);
+  renderAttackersTable(d.top_ips);
+  renderTimelineBreakdown(d);
+}
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+
+const CHART_DEFAULTS = {
+  color: '#8fa3be',
+  plugins: {
+    legend: {labels:{color:'#8fa3be',font:{size:11,family:"'Inter',sans-serif"}}},
+    tooltip:{
+      backgroundColor:'rgba(9,12,22,0.95)',
+      borderColor:'rgba(255,255,255,0.1)',borderWidth:1,
+      titleColor:'#eef2f8',bodyColor:'#8fa3be',
+      padding:10,cornerRadius:8
+    },
+  },
+};
+
+function renderSevChart(d){
+  const bySev = d.by_severity;
+  const labels = SEV_ORDER.filter(s => bySev[s] > 0);
+  if(!labels.length) return;
+  new Chart($('chartSev'), {
+    type:'doughnut',
+    data:{
+      labels,
+      datasets:[{
+        data: labels.map(s => bySev[s]),
+        backgroundColor: labels.map(s => SEV_COLORS[s]),
+        borderColor: '#090c16',
+        borderWidth: 3,
+        hoverOffset: 8,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{
+        ...CHART_DEFAULTS.plugins,
+        legend:{...CHART_DEFAULTS.plugins.legend,position:'right'},
+      },
+      cutout:'62%',
+    }
+  });
+}
+
+function renderCatChart(d){
+  const cats = Object.entries(d.by_category).slice(0,10);
+  if(!cats.length) return;
+  const maxVal = Math.max(...cats.map(c=>c[1]));
+  new Chart($('chartCat'),{
+    type:'bar',
+    data:{
+      labels: cats.map(c=>c[0]),
+      datasets:[{
+        data: cats.map(c=>c[1]),
+        backgroundColor: cats.map((_,i)=>`hsla(${200+i*18},70%,60%,0.7)`),
+        borderColor:     cats.map((_,i)=>`hsla(${200+i*18},70%,60%,1)`),
+        borderWidth:1,borderRadius:4,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{...CHART_DEFAULTS.plugins,legend:{display:false}},
+      scales:{
+        x:{ticks:{color:'#4e6278',maxTicksLimit:6},grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+        y:{ticks:{color:'#8fa3be',font:{size:11}},grid:{display:false},border:{display:false}},
+      },
+    }
+  });
+}
+
+function renderRulesChart(d){
+  const rules = d.top_rules.slice(0,12);
+  if(!rules.length) return;
+  new Chart($('chartRules'),{
+    type:'bar',
+    data:{
+      labels: rules.map(r=>r.rule),
+      datasets:[{
+        data: rules.map(r=>r.count),
+        backgroundColor: rules.map(r=>SEV_COLORS[r.severity]+'99'),
+        borderColor:     rules.map(r=>SEV_COLORS[r.severity]),
+        borderWidth:1,borderRadius:4,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{...CHART_DEFAULTS.plugins,legend:{display:false}},
+      scales:{
+        x:{ticks:{color:'#4e6278',maxTicksLimit:6},grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+        y:{ticks:{color:'#8fa3be',font:{size:11}},grid:{display:false},border:{display:false}},
+      },
+    }
+  });
+}
+
+function renderTimelineChart(d){
+  if(!d.timeline.length) return;
+  const tl = d.timeline;
+  new Chart($('chartTimeline'),{
+    type:'bar',
+    data:{
+      labels: tl.map(t=>t.t.replace('T',' ')),
+      datasets: SEV_ORDER.filter(s=>tl.some(t=>t[s]>0)).map(s=>({
+        label: s,
+        data: tl.map(t=>t[s]||0),
+        backgroundColor: SEV_COLORS[s]+'bb',
+        borderColor: SEV_COLORS[s],
+        borderWidth:1,borderRadius:2,stack:'alerts',
+      }))
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{...CHART_DEFAULTS.plugins,legend:{...CHART_DEFAULTS.plugins.legend,position:'top'}},
+      scales:{
+        x:{stacked:true,ticks:{color:'#4e6278',maxRotation:45,font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+        y:{stacked:true,ticks:{color:'#4e6278',maxTicksLimit:5},grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+      },
+    }
+  });
+}
+
+// ── Alerts Table ──────────────────────────────────────────────────────────────
+let _alertFilter = {sev:'', ip:'', rule:''};
+let _alertSort   = {col:'timestamp', dir:-1};
+let _alertPage   = 0;
+const PAGE_SIZE  = 50;
+
+function renderAlertsTable(alerts){
+  const container = $('alertsTable');
+  container.innerHTML = `
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-header-title">Alert Feed</span>
+        <span class="table-header-count" id="alertCount"></span>
+        <div class="table-filters">
+          <select id="sevFilter" onchange="applyAlertFilters()">
+            <option value="">All severities</option>
+            ${SEV_ORDER.map(s=>`<option value="${s}">${s}</option>`).join('')}
+          </select>
+          <input id="ipFilter" type="text" placeholder="Filter IP…" oninput="applyAlertFilters()" style="width:130px"/>
+          <input id="ruleFilter" type="text" placeholder="Filter rule…" oninput="applyAlertFilters()" style="width:160px"/>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th onclick="sortAlerts('timestamp')">Timestamp</th>
+              <th onclick="sortAlerts('severity')">Severity</th>
+              <th onclick="sortAlerts('rule')">Rule</th>
+              <th onclick="sortAlerts('src_ip')">Source IP</th>
+              <th onclick="sortAlerts('dst_ip')">Dest IP</th>
+              <th onclick="sortAlerts('dst_port')">Port</th>
+              <th onclick="sortAlerts('threat_score')">Threat</th>
+              <th>Also Triggered</th>
+            </tr>
+          </thead>
+          <tbody id="alertTbody"></tbody>
+        </table>
+      </div>
+      <div class="table-pagination">
+        <span class="page-info" id="alertPageInfo"></span>
+        <div class="page-btns">
+          <button class="page-btn" id="alertPrev" onclick="alertPageChange(-1)">‹ Prev</button>
+          <button class="page-btn" id="alertNext" onclick="alertPageChange(1)">Next ›</button>
+        </div>
+      </div>
+    </div>`;
+  window._alerts = alerts;
+  applyAlertFilters();
+}
+
+function applyAlertFilters(){
+  _alertFilter.sev  = $('sevFilter')?.value || '';
+  _alertFilter.ip   = ($('ipFilter')?.value || '').toLowerCase();
+  _alertFilter.rule = ($('ruleFilter')?.value || '').toLowerCase();
+  _alertPage = 0;
+  drawAlerts();
+}
+
+function sortAlerts(col){
+  if(_alertSort.col === col) _alertSort.dir *= -1;
+  else { _alertSort.col = col; _alertSort.dir = -1; }
+  document.querySelectorAll('thead th').forEach(th => th.classList.remove('sorted'));
+  drawAlerts();
+}
+
+function alertPageChange(dir){
+  _alertPage += dir;
+  drawAlerts();
+}
+
+function drawAlerts(){
+  let rows = (window._alerts||[]).filter(a=>{
+    if(_alertFilter.sev  && a.severity !== _alertFilter.sev) return false;
+    if(_alertFilter.ip   && !(a.src_ip||'').toLowerCase().includes(_alertFilter.ip)) return false;
+    if(_alertFilter.rule && !(a.rule||'').toLowerCase().includes(_alertFilter.rule)) return false;
+    return true;
+  });
+
+  const col = _alertSort.col, dir = _alertSort.dir;
+  rows.sort((a,b)=>{
+    let av = a[col]??'', bv = b[col]??'';
+    if(col==='severity'){av=SEV_ORDER.indexOf(av);bv=SEV_ORDER.indexOf(bv);}
+    if(col==='threat_score'||col==='dst_port'){av=av||0;bv=bv||0;}
+    if(av<bv) return -dir; if(av>bv) return dir; return 0;
+  });
+
+  const total  = rows.length;
+  const pages  = Math.max(1, Math.ceil(total/PAGE_SIZE));
+  _alertPage   = Math.max(0, Math.min(_alertPage, pages-1));
+  const start  = _alertPage * PAGE_SIZE;
+  const slice  = rows.slice(start, start+PAGE_SIZE);
+
+  const $count = $('alertCount');
+  if($count) $count.textContent = `${total.toLocaleString()} alerts`;
+
+  const tbody = $('alertTbody');
+  if(!tbody) return;
+  if(!slice.length){
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">No alerts match the current filters</td></tr>`;
+  } else {
+    tbody.innerHTML = slice.map(a=>{
+      const also = (a.also_triggered||[]);
+      const alsoStr = also.length ? `<span style="color:var(--text2);font-size:10px">+${also.length}: ${esc(also.slice(0,2).join(', '))}${also.length>2?'…':''}</span>` : '<span style="color:var(--text3)">—</span>';
+      const score = a.threat_score||0;
+      const scoreColor = score>=80?'var(--crit)':score>=50?'var(--high)':score>=30?'var(--med)':'var(--text3)';
+      return `<tr>
+        <td class="mono" style="color:var(--text2)">${esc((a.timestamp||'').replace('T',' ').substring(0,19))}</td>
+        <td>${sevBadge(a.severity)}</td>
+        <td style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.rule)}">${esc(a.rule)}</td>
+        <td class="mono clickable" style="color:var(--cyan)" onclick="openIpPanel('${esc(a.src_ip)}')">${esc(a.src_ip)}</td>
+        <td class="mono" style="color:var(--text2)">${esc(a.dst_ip)}</td>
+        <td class="mono" style="color:var(--text2)">${a.dst_port||'—'}</td>
+        <td><span class="mono" style="font-weight:700;color:${scoreColor}">${score||'—'}</span></td>
+        <td>${alsoStr}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  const pi = $('alertPageInfo');
+  if(pi) pi.textContent = `${start+1}–${Math.min(start+PAGE_SIZE,total)} of ${total}`;
+  const prev = $('alertPrev'), next = $('alertNext');
+  if(prev) prev.disabled = _alertPage===0;
+  if(next) next.disabled = _alertPage>=pages-1;
+}
+
+// ── Attackers Table ───────────────────────────────────────────────────────────
+function renderAttackersTable(ips){
+  const container = $('attackersTable');
+  if(!ips.length){
+    container.innerHTML = `<div class="table-wrap"><div class="table-empty">No attacking IPs detected</div></div>`;
+    return;
+  }
+  container.innerHTML = `
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-header-title">Attacking IPs</span>
+        <span class="table-header-count">${ips.length} unique source${ips.length!==1?'s':''}</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Source IP</th>
+              <th>Worst Severity</th>
+              <th>Threat Score</th>
+              <th>Alerts</th>
+              <th>Categories</th>
+              <th>Rules Triggered</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ips.map((ip,i)=>`<tr class="clickable" onclick="openIpPanel('${esc(ip.ip)}')">
+              <td class="mono" style="color:var(--text3)">${i+1}</td>
+              <td class="mono" style="color:var(--cyan);font-weight:600">${esc(ip.ip)}</td>
+              <td>${sevBadge(ip.worst_sev)}</td>
+              <td>${scoreBar(ip.score)}</td>
+              <td class="mono" style="font-weight:600">${ip.count}</td>
+              <td style="font-size:11px;color:var(--text2)">${ip.categories.map(c=>esc(c)).join(', ')}</td>
+              <td class="mono" style="color:var(--text3)">${ip.rules.length}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// ── Timeline breakdown ────────────────────────────────────────────────────────
+function renderTimelineBreakdown(d){
+  const container = $('timelineBreakdown');
+  if(!container || !d.timeline.length) return;
+  const topBuckets = [...d.timeline]
+    .sort((a,b)=>(b.CRITICAL*4+b.HIGH*2+b.MEDIUM)-(a.CRITICAL*4+a.HIGH*2+a.MEDIUM))
+    .slice(0,5)
+    .filter(t => t.CRITICAL+t.HIGH+t.MEDIUM+t.LOW > 0);
+  if(!topBuckets.length) return;
+  container.innerHTML = `
+    <div class="table-wrap">
+      <div class="table-header"><span class="table-header-title">Busiest Minutes</span></div>
+      <table>
+        <thead><tr><th>Minute</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Total</th></tr></thead>
+        <tbody>
+          ${topBuckets.map(t=>`<tr>
+            <td class="mono" style="color:var(--text1)">${esc(t.t.replace('T',' '))}</td>
+            <td class="mono" style="color:var(--crit);font-weight:700">${t.CRITICAL||0}</td>
+            <td class="mono" style="color:var(--high);font-weight:700">${t.HIGH||0}</td>
+            <td class="mono" style="color:var(--med)">${t.MEDIUM||0}</td>
+            <td class="mono" style="color:var(--low)">${t.LOW||0}</td>
+            <td class="mono" style="font-weight:700">${(t.CRITICAL+t.HIGH+t.MEDIUM+t.LOW)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+// ── IP Panel ──────────────────────────────────────────────────────────────────
+async function openIpPanel(ip){
+  const panel = $('ipPanel'), body = $('ipPanelBody'), overlay = $('overlay');
+  $('ipPanelTitle').textContent = ip;
+  body.innerHTML = `<div style="color:var(--text2);font-size:11px;font-family:'JetBrains Mono',monospace">Loading…</div>`;
+  panel.classList.add('open');
+  overlay.classList.add('show');
+
+  const res = await fetch(`/api/ip/${encodeURIComponent(ip)}`);
+  const d   = await res.json();
+
+  const topRules = Object.entries(d.by_rule).slice(0,10);
+  const severities = ['CRITICAL','HIGH','MEDIUM','LOW'];
+
+  body.innerHTML = `
+    <div class="ip-stat-row">
+      <div class="ip-stat"><div class="ip-stat-label">Alerts</div><div class="ip-stat-value">${d.total}</div></div>
+      <div class="ip-stat"><div class="ip-stat-label">Worst</div><div class="ip-stat-value" style="font-size:13px">${sevBadge(Object.keys(d.by_sev).sort((a,b)=>['LOW','MEDIUM','HIGH','CRITICAL'].indexOf(b)-['LOW','MEDIUM','HIGH','CRITICAL'].indexOf(a))[0]||'LOW')}</div></div>
+      <div class="ip-stat"><div class="ip-stat-label">Rules</div><div class="ip-stat-value">${topRules.length}</div></div>
+    </div>
+
+    <div>
+      <div class="ip-section-title">Severity Breakdown</div>
+      ${severities.filter(s=>d.by_sev[s]).map(s=>`
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+          ${sevBadge(s)}
+          <div style="flex:1;height:4px;background:var(--bg5);border-radius:2px;overflow:hidden">
+            <div style="height:100%;background:${SEV_COLORS[s]};width:${Math.round((d.by_sev[s]/d.total)*100)}%;border-radius:2px"></div>
+          </div>
+          <span class="mono" style="font-size:10px;color:var(--text2);min-width:26px;text-align:right">${d.by_sev[s]}</span>
+        </div>`).join('')}
+    </div>
+
+    <div>
+      <div class="ip-section-title">Rules Triggered (${topRules.length})</div>
+      ${topRules.map(([rule,count])=>`
+        <div class="ip-rule-row">
+          <span class="ip-rule-name">${esc(rule)}</span>
+          <span class="ip-rule-count">${count}</span>
+        </div>`).join('')}
+    </div>
+
+    <div>
+      <div class="ip-section-title">Recent Alerts</div>
+      <div style="display:flex;flex-direction:column;gap:5px">
+        ${d.alerts.slice(0,10).map(a=>`
+          <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+            <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+              ${sevBadge(a.severity)}
+              <span style="font-size:11px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.rule)}</span>
+            </div>
+            <div class="mono" style="font-size:10px;color:var(--text2)">
+              ${esc(a.src_ip)} → ${esc(a.dst_ip)}${a.dst_port?':'+a.dst_port:''}
+              · ${esc((a.timestamp||'').replace('T',' ').substring(0,19))}
+            </div>
+          </div>`).join('')}
+        ${d.alerts.length>10?`<div style="text-align:center;font-size:10px;color:var(--text3);padding:4px">… and ${d.alerts.length-10} more</div>`:''}
+      </div>
+    </div>
+
+    <div style="padding-top:4px">
+      <button onclick="filterByIp('${esc(ip)}')" style="
+        width:100%;padding:8px;border-radius:7px;
+        background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.2);
+        color:var(--cyan);font-size:12px;font-weight:600;transition:all .15s
+      ">Show all alerts from this IP →</button>
+    </div>
+  `;
+}
+
+function closeIpPanel(){
+  $('ipPanel').classList.remove('open');
+  $('overlay').classList.remove('show');
+}
+
+function filterByIp(ip){
+  closeIpPanel();
+  showSection('alerts');
+  const f = $('ipFilter');
+  if(f){ f.value = ip; applyAlertFilters(); }
+}
+
+// ── CSV Export ────────────────────────────────────────────────────────────────
+function exportCSV(){
+  const alerts = window._alerts||[];
+  const cols = ['timestamp','severity','rule','src_ip','dst_ip','dst_port','protocol','threat_score','also_triggered'];
+  const rows = [cols.join(',')];
+  alerts.forEach(a=>{
+    rows.push(cols.map(c=>{
+      const v = c==='also_triggered'?(a[c]||[]).join('|'):(a[c]??'');
+      return `"${String(v).replace(/"/g,'""')}"`;
+    }).join(','));
+  });
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const url  = URL.createObjectURL(blob);
+  const el   = document.createElement('a');
+  el.href = url;
+  el.download = (_data?.meta?.pcap_file||'nids').replace(/\.pcap.*$/,'')+'_alerts.csv';
+  el.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  if(e.key==='1') showSection('overview');
+  if(e.key==='2') showSection('alerts');
+  if(e.key==='3') showSection('attackers');
+  if(e.key==='4') showSection('timeline');
+  if(e.key==='e'||e.key==='E') exportCSV();
+  if(e.key==='Escape') closeIpPanel();
+});
+
+init().catch(err=>{
+  $('loading').innerHTML = `<div style="color:var(--red);font-family:'JetBrains Mono',monospace;font-size:13px">
+    Failed to load data: ${err.message}</div>`;
+});
+</script>
+</body>
+</html>

@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
-# Run the NIDS from anywhere. Always executes from the project root
-# so relative paths (logs/nids.log, config.py) resolve correctly.
+# NIDS — Network Intrusion Detection System
+#
+# Live capture:
+#   sudo ./nids [--interface wlan0] [--stats-interval 10]
+#
+# Offline pcap analysis:
+#   ./nids --offline <file.pcap> [--output alerts.json] [--quiet]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec sudo "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/main.py" "$@"
+cd "$SCRIPT_DIR"
+
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
+
+# ── Offline mode ──────────────────────────────────────────────────────────────
+if [[ "$1" == "--offline" ]]; then
+    if [[ -z "$2" ]]; then
+        echo "Usage: ./nids --offline <file.pcap> [--output alerts.json] [--quiet]" >&2
+        exit 1
+    fi
+    PCAP_FILE="$2"
+    shift 2
+    exec "$PYTHON" "$SCRIPT_DIR/scripts/replay_pcap.py" --file "$PCAP_FILE" "$@"
+fi
+
+# ── Live capture mode ─────────────────────────────────────────────────────────
+
+# Dashboard runs without root
+"$PYTHON" "$SCRIPT_DIR/dashboard/app.py" &
+DASH_PID=$!
+echo "[nids] Dashboard → http://localhost:5000"
+
+cleanup() {
+    kill "$DASH_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# NIDS engine needs root for raw packet capture
+sudo "$PYTHON" "$SCRIPT_DIR/main.py" "$@"

@@ -9,10 +9,11 @@
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
-<script src="/static/nids-data.js"></script>
-<script type="text/babel" src="/static/tweaks-panel.jsx"></script>
-<script type="text/babel" src="/static/nids-ui.jsx"></script>
-<script type="text/babel" src="/static/nids-charts.jsx"></script>
+<!-- support files -->
+<script src="nids-data.js"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="nids-ui.jsx"></script>
+<script type="text/babel" src="nids-charts.jsx"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -21,26 +22,18 @@
   --text0:#eef2f8; --text1:#8fa3be; --text2:#4e6278; --text3:#2d3f52;
   --cyan:#00d4ff; --green:#00dfa0; --red:#ff3355; --orange:#ff7c2a; --amber:#ffbe2e; --blue:#4a8fff; --purple:#9b6fff;
 }
-html.light {
-  --bg0:#f0f4f9; --bg1:#e8edf5; --bg2:#dde4ef; --bg3:#d0d9ea; --bg4:#c5cfdf; --bg5:#b5c0d3;
-  --border:rgba(0,0,0,0.07); --border-md:rgba(0,0,0,0.13); --border-hi:rgba(0,0,0,0.2);
-  --text0:#0d1520; --text1:#2d4a6a; --text2:#5a7a9e; --text3:#8ca5c0;
-  --cyan:#007db8; --green:#00a070; --red:#d42040; --orange:#c95a00; --amber:#c08000; --blue:#2060d0; --purple:#6b3fcc;
-}
 html,body { height:100%; overflow:hidden; background:var(--bg0); color:var(--text0); font-family:'Inter',sans-serif; font-size:13px; }
 body::before { content:''; position:fixed; inset:0; pointer-events:none; z-index:0; background-image:radial-gradient(circle,rgba(0,212,255,0.035) 1px,transparent 1px); background-size:28px 28px; }
-html.light body::before { background-image:radial-gradient(circle,rgba(0,0,0,0.04) 1px,transparent 1px); }
 ::-webkit-scrollbar { width:3px; height:3px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:var(--bg5); border-radius:2px; }
 button { cursor:pointer; border:none; background:none; color:inherit; font:inherit; }
 input,select { font:inherit; color:inherit; background:var(--bg4); border:1px solid var(--border-md); border-radius:6px; padding:5px 10px; outline:none; transition:border-color .15s,box-shadow .15s; }
 input:focus,select:focus { border-color:var(--cyan); box-shadow:0 0 0 3px rgba(0,212,255,0.1); }
 select option { background:var(--bg3); }
-@keyframes nids-pulse       { 0%,100%{opacity:1}50%{opacity:0.3} }
-@keyframes nids-glow-pulse  { 0%,100%{box-shadow:0 0 14px rgba(255,51,85,0.18)}50%{box-shadow:0 0 32px rgba(255,51,85,0.38)} }
-@keyframes nids-toast-in    { from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none} }
-@keyframes nids-ring-pulse  { 0%,100%{opacity:0.35;transform:scale(1)}50%{opacity:0.1;transform:scale(1.4)} }
-@keyframes nids-row-in      { from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none} }
-@keyframes nids-slide-in    { from{transform:translateX(100%)}to{transform:none} }
+@keyframes nids-pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+@keyframes nids-glow-pulse { 0%,100%{box-shadow:0 0 14px rgba(255,51,85,0.18)}50%{box-shadow:0 0 32px rgba(255,51,85,0.38)} }
+@keyframes nids-toast-in { from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none} }
+@keyframes nids-ring-pulse { 0%,100%{opacity:0.35;transform:scale(1)}50%{opacity:0.1;transform:scale(1.4)} }
+@keyframes nids-row-in { from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none} }
 tbody tr { transition:background .1s; }
 tbody tr:hover { background:rgba(255,255,255,0.025) !important; }
 </style>
@@ -53,19 +46,17 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 const NAV = [
-  { id:"dashboard", label:"Dashboard",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="2" width="6" height="6" rx="1.5"/><rect x="2" y="12" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/></svg> },
-  { id:"alerts",    label:"Alert Feed", icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M8.57 3.22L2 14a1.67 1.67 0 001.43 2.5H16.57A1.67 1.67 0 0018 14L11.43 3.22a1.67 1.67 0 00-2.86 0z"/><line x1="10" y1="8" x2="10" y2="11"/><circle cx="10" cy="13.5" r=".75" fill="currentColor"/></svg> },
-  { id:"map",       label:"Attack Map", icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><circle cx="10" cy="10" r="8"/><path d="M2 10h16M10 2a14.5 14.5 0 000 16M10 2a14.5 14.5 0 010 16"/></svg> },
-  { id:"rules",     label:"Rules",      icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M10 18s7-3.5 7-8.75V4.25L10 2 3 4.25V9.25C3 14.5 10 18 10 18z"/></svg> },
-  { id:"analytics", label:"Analytics",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><polyline points="18 10 15 10 12.5 17.5 7.5 2.5 5 10 2 10"/></svg> },
-  { id:"allowlist", label:"Allowlist",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M10 18s7-3.5 7-8.75V4.25L10 2 3 4.25V9.25C3 14.5 10 18 10 18z"/><polyline points="6.5 10 9 12.5 13.5 7.5"/></svg> },
+  { id:"dashboard", label:"Dashboard",   icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="2" width="6" height="6" rx="1.5"/><rect x="2" y="12" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/></svg> },
+  { id:"alerts",    label:"Alert Feed",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M8.57 3.22L2 14a1.67 1.67 0 001.43 2.5H16.57A1.67 1.67 0 0018 14L11.43 3.22a1.67 1.67 0 00-2.86 0z"/><line x1="10" y1="8" x2="10" y2="11"/><circle cx="10" cy="13.5" r=".75" fill="currentColor"/></svg> },
+  { id:"map",       label:"Attack Map",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><circle cx="10" cy="10" r="8"/><path d="M2 10h16M10 2a14.5 14.5 0 000 16M10 2a14.5 14.5 0 010 16"/></svg> },
+  { id:"rules",     label:"Rules",       icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M10 18s7-3.5 7-8.75V4.25L10 2 3 4.25V9.25C3 14.5 10 18 10 18z"/></svg> },
+  { id:"analytics", label:"Analytics",   icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><polyline points="18 10 15 10 12.5 17.5 7.5 2.5 5 10 2 10"/></svg> },
 ];
 
-function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, health, apiMode }) {
-  const iface = health?.interface || "—";
-  const ruleCount = health?.rules_active || NIDS_RULES.length;
+function Sidebar({ active, setActive, critCount, blockedCount }) {
   return (
     <div style={{width:196,background:"var(--bg1)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",flexShrink:0}}>
+      {/* Brand */}
       <div style={{height:52,display:"flex",alignItems:"center",gap:10,padding:"0 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
         <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
           <circle cx="12" cy="12" r="9" stroke="#00d4ff" strokeWidth="1.5"/>
@@ -76,13 +67,14 @@ function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, h
         </svg>
         <div>
           <div style={{fontSize:11,fontWeight:700,color:"var(--text0)",letterSpacing:"0.08em",fontFamily:"'JetBrains Mono',monospace"}}>NIDS</div>
-          <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.1em",textTransform:"uppercase"}}>Signature-based</div>
+          <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.1em",textTransform:"uppercase"}}>v3.0 · Signature-based</div>
         </div>
       </div>
 
+      {/* Nav */}
       <div style={{padding:"12px 8px",flex:1,display:"flex",flexDirection:"column",gap:2,overflowY:"auto"}}>
         <div style={{fontSize:9,color:"var(--text3)",letterSpacing:"0.12em",textTransform:"uppercase",padding:"4px 8px",marginBottom:3}}>Views</div>
-        {NAV.map(n=>(
+        {NAV.map((n,i)=>(
           <button key={n.id} onClick={()=>setActive(n.id)} style={{
             display:"flex",alignItems:"center",gap:9,padding:"8px 10px",borderRadius:7,textAlign:"left",
             color:active===n.id?"var(--cyan)":"var(--text2)",
@@ -93,31 +85,32 @@ function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, h
             <span style={{flexShrink:0}}>{n.icon}</span>
             <span style={{flex:1}}>{n.label}</span>
             {n.id==="alerts"&&critCount>0&&<span style={{background:"var(--red)",color:"#fff",fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:10,fontFamily:"'JetBrains Mono',monospace"}}>{critCount}</span>}
-            {n.id==="allowlist"&&allowlistCount>0&&<span style={{background:"rgba(0,223,160,0.15)",color:"var(--green)",fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:10,fontFamily:"'JetBrains Mono',monospace",border:"1px solid rgba(0,223,160,0.3)"}}>{allowlistCount}</span>}
+            {n.id==="rules"&&<span style={{color:"var(--text3)",fontSize:9,fontFamily:"'JetBrains Mono',monospace"}}>{i===3?"47":""}</span>}
           </button>
         ))}
 
         <div style={{marginTop:12,fontSize:9,color:"var(--text3)",letterSpacing:"0.12em",textTransform:"uppercase",padding:"4px 8px",marginBottom:3}}>System</div>
         {[
-          {label:"Blocked IPs", val:blockedCount||"none", color:"var(--red)",   icon:<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="15" height="15"><circle cx="8" cy="8" r="6"/><line x1="4.5" y1="4.5" x2="11.5" y2="11.5"/></svg>},
-          {label:`${ruleCount} Rules`, val:"active",      color:"var(--green)", icon:<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="15" height="15"><path d="M8 14s5-2.5 5-6.25V3L8 1.5 3 3v4.75C3 11.5 8 14 8 14z"/></svg>},
-          {label:"Interface",    val:iface,               color:"var(--cyan)",  icon:<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="15" height="15"><rect x="2" y="4" width="12" height="2.5" rx="1"/><rect x="2" y="8" width="9" height="2.5" rx="1"/><rect x="2" y="12" width="6" height="2.5" rx="1"/></svg>},
+          {label:"Blocked IPs", val:blockedCount, color:"var(--red)", icon:<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="15" height="15"><circle cx="8" cy="8" r="6"/><line x1="4.5" y1="4.5" x2="11.5" y2="11.5"/></svg>},
+          {label:"72 Rules",    val:"active",      color:"var(--green)", icon:<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="15" height="15"><path d="M8 14s5-2.5 5-6.25V3L8 1.5 3 3v4.75C3 11.5 8 14 8 14z"/></svg>},
+          {label:"Queue",       val:"eth0",        color:"var(--cyan)",  icon:<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="15" height="15"><rect x="2" y="4" width="12" height="2.5" rx="1"/><rect x="2" y="8" width="9" height="2.5" rx="1"/><rect x="2" y="12" width="6" height="2.5" rx="1"/></svg>},
         ].map(item=>(
           <div key={item.label} style={{display:"flex",alignItems:"center",gap:9,padding:"7px 10px",borderRadius:7,color:"var(--text2)",fontSize:11}}>
             <span style={{color:item.color,opacity:0.8,flexShrink:0}}>{item.icon}</span>
-            <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.label}</span>
-            <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:item.color,fontWeight:600,flexShrink:0}}>{item.val}</span>
+            <span style={{flex:1}}>{item.label}</span>
+            <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:item.color,fontWeight:600}}>{item.val}</span>
           </div>
         ))}
       </div>
 
+      {/* Footer */}
       <div style={{padding:"12px 14px",borderTop:"1px solid var(--border)"}}>
         <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:5}}>
-          <LiveDot color={apiMode?"var(--green)":"var(--amber)"} size={7}/>
-          <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:apiMode?"var(--green)":"var(--amber)"}}>{apiMode?"LIVE MODE":"DEMO MODE"}</span>
+          <LiveDot color="var(--green)" size={7}/>
+          <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:"var(--green)"}}>ENGINE RUNNING</span>
         </div>
         <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6}}>
-          Scapy · Flask · Python<br/>{apiMode?"Connected to engine":"Simulated data"}
+          Scapy 2.5 · Flask 3.0<br/>Thread 1/2/3 active
         </div>
       </div>
     </div>
@@ -125,14 +118,15 @@ function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, h
 }
 
 // ─── HEADER ───────────────────────────────────────────────────────────────────
-function Header({ active, paused, onExport, onShortcuts, onTweaks, onTheme, theme, apiMode }) {
+function Header({ active, paused, onExport, onShortcuts }) {
   const [clock,setClock]=useState(new Date());
   useEffect(()=>{const iv=setInterval(()=>setClock(new Date()),1000);return()=>clearInterval(iv);},[]);
-  const titles={dashboard:"Overview",alerts:"Alert Feed",map:"Attack Map",rules:"Rule Coverage",analytics:"Analytics",allowlist:"IP / Subnet Allowlist"};
+  const titles={dashboard:"Overview",alerts:"Alert Feed",map:"Attack Map",rules:"Rule Coverage",analytics:"Analytics"};
   return (
     <div style={{height:52,background:"var(--bg2)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",padding:"0 20px",gap:14,flexShrink:0}}>
       <h1 style={{fontSize:15,fontWeight:700,color:"var(--text0)",flex:1}}>{titles[active]||"Dashboard"}</h1>
 
+      {/* Sev legend */}
       <div style={{display:"flex",gap:14}}>
         {Object.entries(NIDS_SEV).map(([k,v])=>(
           <div key={k} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:"var(--text2)"}}>
@@ -144,23 +138,16 @@ function Header({ active, paused, onExport, onShortcuts, onTweaks, onTheme, them
 
       <div style={{width:1,height:18,background:"var(--border-md)"}}/>
 
+      {/* Action buttons */}
       <button onClick={onExport} title="Export CSV (E)" style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",borderRadius:6,background:"var(--bg4)",border:"1px solid var(--border-md)",color:"var(--text1)",fontSize:11,fontWeight:500}}>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M8 2v8M5 7l3 3 3-3"/><path d="M3 11v2h10v-2"/></svg>
         Export
       </button>
       <button onClick={onShortcuts} title="Shortcuts (?)" style={{display:"flex",alignItems:"center",justifyContent:"center",width:30,height:30,borderRadius:6,background:"var(--bg4)",border:"1px solid var(--border-md)",color:"var(--text1)",fontSize:12,fontWeight:600}}>?</button>
-      <button onClick={onTheme} title="Toggle light/dark mode (T)" style={{display:"flex",alignItems:"center",justifyContent:"center",width:30,height:30,borderRadius:6,background:"var(--bg4)",border:"1px solid var(--border-md)",color:"var(--text1)"}}>
-        {theme==="light"
-          ? <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" width="14" height="14"><circle cx="8" cy="8" r="3"/><path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/></svg>
-          : <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" width="14" height="14"><path d="M13.5 10.5A6 6 0 015.5 2.5a6 6 0 108 8z"/></svg>
-        }
-      </button>
-      <button onClick={onTweaks} title="Settings" style={{display:"flex",alignItems:"center",justifyContent:"center",width:30,height:30,borderRadius:6,background:"var(--bg4)",border:"1px solid var(--border-md)",color:"var(--text1)"}}>
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" width="14" height="14"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg>
-      </button>
 
       <div style={{width:1,height:18,background:"var(--border-md)"}}/>
 
+      {/* Live indicator */}
       <div style={{display:"flex",alignItems:"center",gap:6}}>
         <LiveDot color={paused?"var(--amber)":"var(--green)"} size={7} animate={!paused}/>
         <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:paused?"var(--amber)":"var(--green)",letterSpacing:"0.1em"}}>{paused?"PAUSED":"LIVE"}</span>
@@ -176,17 +163,15 @@ function Header({ active, paused, onExport, onShortcuts, onTweaks, onTheme, them
 }
 
 // ─── STATUS BAR ───────────────────────────────────────────────────────────────
-function StatusBar({ queuePct, dropRate, uptime, pktRate, health, apiMode }) {
-  const iface = health?.interface || "—";
-  const logSize = health?.log_size || "—";
+function StatusBar({ queuePct, dropRate, uptime, pktRate }) {
   const items=[
-    {l:"INTERFACE", v:iface,            ok:true},
+    {l:"INTERFACE", v:"eth0",           ok:true},
     {l:"QUEUE",     v:`${queuePct}%`,   ok:queuePct<80, warn:queuePct>=50},
     {l:"DROP RATE", v:`${dropRate}%`,   ok:parseFloat(dropRate)<1},
     {l:"UPTIME",    v:uptime,           ok:true},
     {l:"PKT/S",     v:pktRate,          ok:pktRate<400},
-    {l:"LOG",       v:logSize,          ok:health?.log_exists!==false},
-    {l:"MODE",      v:apiMode?"LIVE":"DEMO", ok:apiMode},
+    {l:"THREADS",   v:"3/3",            ok:true},
+    {l:"LOG",       v:"nids.log",       ok:true},
   ];
   return (
     <div style={{height:30,background:"var(--bg1)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",padding:"0 20px",gap:0,overflowX:"auto",flexShrink:0}}>
@@ -200,7 +185,7 @@ function StatusBar({ queuePct, dropRate, uptime, pktRate, health, apiMode }) {
         </React.Fragment>
       ))}
       <div style={{flex:1}}/>
-      <div style={{fontSize:9,fontFamily:"'JetBrains Mono',monospace",color:"var(--text3)"}}>Python · Scapy · Flask</div>
+      <div style={{fontSize:9,fontFamily:"'JetBrains Mono',monospace",color:"var(--text3)"}}>Python 3.10 · Scapy 2.5 · Flask 3.0</div>
     </div>
   );
 }
@@ -212,10 +197,10 @@ function ThreatPosture({ alerts }) {
   const high=recent.filter(a=>a.severity==="HIGH").length;
   const level=crit>5?"CRITICAL":crit>0?"HIGH":high>10?"HIGH":high>3?"ELEVATED":"NORMAL";
   const cfg={
-    CRITICAL:{color:"var(--red)",    desc:"Active critical threats — immediate response required"},
-    HIGH:    {color:"var(--orange)", desc:"High-severity events in the last hour"},
-    ELEVATED:{color:"var(--amber)",  desc:"Elevated activity — monitoring closely"},
-    NORMAL:  {color:"var(--green)",  desc:"No critical threats detected"},
+    CRITICAL:{color:"var(--red)",   desc:"Active critical threats — immediate response required"},
+    HIGH:    {color:"var(--orange)",desc:"High-severity events in the last hour"},
+    ELEVATED:{color:"var(--amber)", desc:"Elevated activity — monitoring closely"},
+    NORMAL:  {color:"var(--green)", desc:"No critical threats detected"},
   }[level];
   return (
     <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 16px",background:`${cfg.color}08`,border:`1px solid ${cfg.color}30`,borderRadius:8}}>
@@ -255,7 +240,7 @@ function TopAttackers({ alerts, onInvestigate }) {
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
               <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:"var(--cyan)",fontWeight:500,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.ip}</span>
               <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-                {item.crit>0&&<span style={{fontSize:9,fontFamily:"'JetBrains Mono',monospace",color:"var(--red)",background:"rgba(255,51,85,0.1)",padding:"1px 4px",borderRadius:3,border:"1px solid rgba(255,51,85,0.25)"}}>{item.crit}×CRIT</span>}
+                {item.crit>0&&<span style={{fontSize:9,fontFamily:"'JetBrains Mono',monospace",color:"var(--red)",background:"var(--red-d,rgba(255,51,85,0.1))",padding:"1px 4px",borderRadius:3,border:"1px solid rgba(255,51,85,0.25)"}}>{item.crit}×CRIT</span>}
                 <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:600,color:"var(--text1)"}}>{item.count}</span>
               </div>
             </div>
@@ -277,7 +262,9 @@ function AlertRow({ alert, isNew, blockedIPs, onBlock, onInvestigate }) {
   const s=NIDS_SEV[alert.severity]||NIDS_SEV.LOW;
   const blocked=blockedIPs.has(alert.src_ip);
 
-  const copyIP=useCallback(()=>{navigator.clipboard?.writeText(alert.src_ip).catch(()=>{});},[alert.src_ip]);
+  const copyIP=useCallback(()=>{
+    navigator.clipboard?.writeText(alert.src_ip).catch(()=>{});
+  },[alert.src_ip]);
 
   return (
     <>
@@ -296,10 +283,7 @@ function AlertRow({ alert, isNew, blockedIPs, onBlock, onInvestigate }) {
         <td onClick={()=>setOpen(o=>!o)} style={{padding:"7px 6px",width:50}}><SevBadge sev={alert.severity}/></td>
         <td onClick={()=>setOpen(o=>!o)} style={{padding:"7px 8px",maxWidth:180}}>
           <div style={{fontWeight:500,fontSize:12,color:"var(--text0)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{alert.rule}</div>
-          <div style={{marginTop:2,display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-            <CatChip cat={alert.category}/>
-            {alert.mitre&&<MitreBadge id={alert.mitre}/>}
-          </div>
+          <div style={{marginTop:2}}><CatChip cat={alert.category}/></div>
         </td>
         <td style={{padding:"7px 8px"}}>
           <div style={{display:"flex",alignItems:"center",gap:5}}>
@@ -325,35 +309,34 @@ function AlertRow({ alert, isNew, blockedIPs, onBlock, onInvestigate }) {
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
                 <SevBadge sev={alert.severity}/>
                 <span style={{fontWeight:600,fontSize:12,color:"var(--text0)",flex:1}}>{alert.rule}</span>
-                {alert.mitre&&<MitreBadge id={alert.mitre}/>}
                 <span style={{fontSize:10,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace"}}>#{alert.id}</span>
+                {/* Action buttons */}
                 <button onClick={()=>onInvestigate(alert.src_ip)} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:5,background:"rgba(0,212,255,0.1)",border:"1px solid rgba(0,212,255,0.25)",color:"var(--cyan)",fontSize:11}}>
                   <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" width="11" height="11"><circle cx="6" cy="6" r="4"/><path d="M10 10l2.5 2.5"/></svg> Investigate
                 </button>
-                <button onClick={()=>onBlock(alert.src_ip)} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:5,background:blockedIPs.has(alert.src_ip)?"rgba(0,223,160,0.1)":"rgba(255,51,85,0.1)",border:`1px solid ${blockedIPs.has(alert.src_ip)?"rgba(0,223,160,0.25)":"rgba(255,51,85,0.25)"}`,color:blockedIPs.has(alert.src_ip)?"var(--green)":"var(--red)",fontSize:11}}>
-                  {blockedIPs.has(alert.src_ip)?"✓ Unblock":"⊘ Block IP"}
+                <button onClick={()=>onBlock(alert.src_ip)} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:5,background:blocked?"rgba(0,223,160,0.1)":"rgba(255,51,85,0.1)",border:`1px solid ${blocked?"rgba(0,223,160,0.25)":"rgba(255,51,85,0.25)"}`,color:blocked?"var(--green)":"var(--red)",fontSize:11}}>
+                  {blocked?"✓ Unblock":"⊘ Block IP"}
                 </button>
                 <button onClick={copyIP} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:5,background:"var(--bg5)",border:"1px solid var(--border-md)",color:"var(--text1)",fontSize:11}}>
                   <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" width="11" height="11"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg> Copy IP
                 </button>
               </div>
+              {/* JSON-style detail */}
               <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:"var(--text1)",lineHeight:1.9,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:"0 24px"}}>
                 {[
-                  ["timestamp", ts.toISOString(),            "var(--green)"],
-                  ["src_ip",    alert.src_ip,                "var(--cyan)"],
-                  ["src_country",alert.src_country,          "var(--text1)"],
-                  ["dst_ip",    alert.dst_ip,                "var(--text0)"],
-                  ["dst_port",  alert.dst_port||"n/a",       "var(--text0)"],
-                  ["protocol",  alert.protocol,              "var(--blue)"],
-                  ["rule",      alert.rule,                  "var(--text0)"],
-                  ["severity",  alert.severity,              s.color],
-                  ["category",  alert.category,              NIDS_CAT_COLOR[alert.category]||"var(--text1)"],
-                  ["mitre",     alert.mitre||"—",            "var(--purple)"],
-                  ["type",      alert.type,                  "var(--text1)"],
+                  ["timestamp", ts.toISOString(), "var(--green)"],
+                  ["src_ip",    alert.src_ip,     "var(--cyan)"],
+                  ["src_country",alert.src_country,"var(--text1)"],
+                  ["dst_ip",    alert.dst_ip,     "var(--text0)"],
+                  ["dst_port",  alert.dst_port||"n/a","var(--text0)"],
+                  ["protocol",  alert.protocol,   "var(--blue)"],
+                  ["rule",      alert.rule,        "var(--text0)"],
+                  ["severity",  alert.severity,    s.color],
+                  ["category",  alert.category,    NIDS_CAT_COLOR[alert.category]||"var(--text1)"],
+                  ["type",      alert.type,        "var(--text1)"],
                   ...(alert.count!=null?[["count",alert.count,"var(--text0)"]]:[] ),
-                  ["ttl",          alert.ttl,                                        "var(--text2)"],
-                  ["length",       alert.length+" bytes",                             "var(--text2)"],
-                  ["threat_score", (alert.threat_score||0)+"/100",                    (alert.threat_score||0)>=80?"var(--red)":(alert.threat_score||0)>=50?"var(--orange)":(alert.threat_score||0)>=30?"var(--amber)":"var(--text2)"],
+                  ["ttl",       alert.ttl,         "var(--text2)"],
+                  ["length",    alert.length+" bytes","var(--text2)"],
                 ].map(([k,v,c])=>(
                   <div key={k}>
                     <span style={{color:"var(--text3)"}}>{k.padEnd(14)}</span>
@@ -379,10 +362,11 @@ function AlertTable({ alerts, paused, setPaused, filter, setFilter, newIds, maxR
     return true;
   }),[alerts,filter]);
 
-  const cats=useMemo(()=>[...new Set(alerts.map(a=>a.category).filter(Boolean))].sort(),[alerts]);
+  const cats=useMemo(()=>[...new Set(NIDS_RULES.map(r=>r.cat))],[]);
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+      {/* Filter bar */}
       <div style={{display:"flex",gap:8,padding:"9px 14px",borderBottom:"1px solid var(--border)",alignItems:"center",flexShrink:0,background:"var(--bg3)",flexWrap:"wrap"}}>
         <select value={filter.sev} onChange={e=>setFilter(f=>({...f,sev:e.target.value}))} style={{fontSize:11,height:28,padding:"0 8px"}}>
           <option value="">All Severities</option>
@@ -404,6 +388,7 @@ function AlertTable({ alerts, paused, setPaused, filter, setFilter, newIds, maxR
           {paused?<><svg viewBox="0 0 12 12" fill="currentColor" width="9" height="9"><polygon points="2,1 11,6 2,11"/></svg>RESUME</>:<><svg viewBox="0 0 12 12" fill="currentColor" width="9" height="9"><rect x="1" y="1" width="4" height="10"/><rect x="7" y="1" width="4" height="10"/></svg>PAUSE</>}
         </button>
       </div>
+      {/* Table */}
       <div style={{overflowY:"auto",flex:1}}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
           <thead>
@@ -435,19 +420,25 @@ function DashboardView({ alerts, paused, setPaused, filter, setFilter, newIds, t
   const topIP=useMemo(()=>{const m={};alerts.forEach(a=>{m[a.src_ip]=(m[a.src_ip]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1])[0]?.[0]||"—";},[alerts]);
   const spark=useMemo(()=>{const b=Array(12).fill(0);const now=Date.now();alerts.forEach(a=>{const h=Math.floor((now-new Date(a.timestamp))/3600000);if(h<12)b[11-h]++;});return b;},[alerts]);
   const topIPs=useMemo(()=>{const m={};alerts.forEach(a=>{m[a.src_ip]=(m[a.src_ip]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([ip,count])=>({ip,count}));},[alerts]);
+
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      {/* Stat cards */}
       <div style={{padding:"12px 20px 0",display:"flex",gap:10,flexShrink:0}}>
-        <StatCard label="Alerts Today"  value={today} color="var(--text0)" spark={spark} sub="rolling 24h"/>
-        <StatCard label="Critical"      value={crit}  color="#ff3355" glow={crit>0} trend={crit>0?12:null} sub={crit>0?"Requires attention":"Clear"} spark={spark.map(v=>Math.round(v*0.18))}/>
-        <StatCard label="High"          value={high}  color="#ff7c2a" glow={high>5} sub={`${alerts.filter(a=>a.severity==="HIGH"&&Date.now()-new Date(a.timestamp)<3600000).length} in last hr`}/>
-        <StatCard label="Top Attacker"  value={topIP} color="var(--cyan)" sub="by alert count" icon={<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" width="14" height="14"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.7-5 6-5s6 2 6 5"/></svg>}/>
+        <StatCard label="Alerts Today" value={today} color="var(--text0)" spark={spark} sub="rolling 24h"/>
+        <StatCard label="Critical" value={crit} color="#ff3355" glow={crit>0} trend={crit>0?12:null} sub={crit>0?"Requires attention":"Clear"} spark={spark.map(v=>Math.round(v*0.18))}/>
+        <StatCard label="High" value={high} color="#ff7c2a" glow={high>5} sub={`${alerts.filter(a=>a.severity==="HIGH"&&Date.now()-new Date(a.timestamp)<3600000).length} in last hr`}/>
+        <StatCard label="Top Attacker" value={topIP} color="var(--cyan)" sub="by alert count" icon={<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" width="14" height="14"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.7-5 6-5s6 2 6 5"/></svg>}/>
         <div style={{flex:"0 0 auto",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:10,padding:"14px 16px",display:"flex",flexDirection:"column",gap:4,minWidth:110}}>
           <span style={{fontSize:10,fontWeight:600,color:"var(--text2)",textTransform:"uppercase",letterSpacing:"0.1em"}}>Packet Rate</span>
           <PacketRateGauge rate={pktRate}/>
         </div>
       </div>
+
+      {/* Threat posture */}
       <div style={{padding:"10px 20px 0",flexShrink:0}}><ThreatPosture alerts={alerts}/></div>
+
+      {/* Charts */}
       <div style={{padding:"10px 20px 0",display:"grid",gridTemplateColumns:"1fr 210px",gap:10,flexShrink:0}}>
         <ChartCard title="Alerts Over Time" subtitle="Last 24 hours · by hour">
           <div style={{height:120}}><TimelineChart alerts={alerts}/></div>
@@ -465,6 +456,8 @@ function DashboardView({ alerts, paused, setPaused, filter, setFilter, newIds, t
           </div>
         </ChartCard>
       </div>
+
+      {/* Bottom: table + attackers */}
       <div style={{flex:1,overflow:"hidden",padding:"10px 20px 16px",display:"grid",gridTemplateColumns:"1fr 210px",gap:10,minHeight:0}}>
         <div style={{background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
           <AlertTable alerts={alerts} paused={paused} setPaused={setPaused} filter={filter} setFilter={setFilter} newIds={newIds} maxRows={tweaks?.maxRows||80} blockedIPs={blockedIPs} onBlock={onBlock} onInvestigate={onInvestigate} ruleSearchRef={ruleSearchRef}/>
@@ -482,24 +475,13 @@ function DashboardView({ alerts, paused, setPaused, filter, setFilter, newIds, t
   );
 }
 
-function AlertsView({ alerts, paused, setPaused, filter, setFilter, newIds, blockedIPs, onBlock, onInvestigate, ruleSearchRef, tweaks }) {
-  return (
-    <div style={{height:"100%",padding:20,overflow:"hidden",display:"flex",flexDirection:"column",gap:10}}>
-      <ThreatPosture alerts={alerts}/>
-      <div style={{flex:1,background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
-        <AlertTable alerts={alerts} paused={paused} setPaused={setPaused} filter={filter} setFilter={setFilter} newIds={newIds} maxRows={tweaks?.maxRows||200} blockedIPs={blockedIPs} onBlock={onBlock} onInvestigate={onInvestigate} ruleSearchRef={ruleSearchRef}/>
-      </div>
-    </div>
-  );
-}
-
 function MapView({ alerts, onInvestigate }) {
   const topRules=useMemo(()=>{const m={};alerts.forEach(a=>{m[a.rule]=(m[a.rule]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([rule,count])=>({rule,count}));},[alerts]);
   return (
     <div style={{padding:20,height:"100%",overflowY:"auto",display:"flex",flexDirection:"column",gap:12}}>
       <div>
         <h2 style={{fontSize:15,fontWeight:700,color:"var(--text0)"}}>Attack Map</h2>
-        <p style={{fontSize:11,color:"var(--text2)",marginTop:2}}>Geographic origin of alert sources · click a dot to investigate</p>
+        <p style={{fontSize:11,color:"var(--text2)",marginTop:2}}>Geographic origin of alert sources · click a dot to filter by IP</p>
       </div>
       <ChartCard title="Global Attack Origins" subtitle="Dot size = alert volume · Color = max severity">
         <WorldMap alerts={alerts} onIpClick={onInvestigate}/>
@@ -533,19 +515,26 @@ function MapView({ alerts, onInvestigate }) {
   );
 }
 
+function AlertsView({ alerts, paused, setPaused, filter, setFilter, newIds, blockedIPs, onBlock, onInvestigate, ruleSearchRef, tweaks }) {
+  return (
+    <div style={{height:"100%",padding:20,overflow:"hidden",display:"flex",flexDirection:"column",gap:10}}>
+      <ThreatPosture alerts={alerts}/>
+      <div style={{flex:1,background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+        <AlertTable alerts={alerts} paused={paused} setPaused={setPaused} filter={filter} setFilter={setFilter} newIds={newIds} maxRows={tweaks?.maxRows||200} blockedIPs={blockedIPs} onBlock={onBlock} onInvestigate={onInvestigate} ruleSearchRef={ruleSearchRef}/>
+      </div>
+    </div>
+  );
+}
+
 function RulesView({ alerts }) {
   const counts=useMemo(()=>{const m={};alerts.forEach(a=>{m[a.rule]=(m[a.rule]||0)+1;});return m;},[alerts]);
   const maxC=Math.max(...Object.values(counts),1);
   const byCat=useMemo(()=>{const m={};NIDS_RULES.forEach(r=>{if(!m[r.cat])m[r.cat]=[];m[r.cat].push(r);});return Object.entries(m);},[]);
-  const totalHits=Object.values(counts).reduce((a,b)=>a+b,0);
   return (
     <div style={{padding:20,height:"100%",overflowY:"auto"}}>
-      <div style={{marginBottom:14,display:"flex",alignItems:"flex-end",justifyContent:"space-between"}}>
-        <div>
-          <h2 style={{fontSize:15,fontWeight:700,color:"var(--text0)"}}>Rule Coverage</h2>
-          <p style={{fontSize:11,color:"var(--text2)",marginTop:3}}>{NIDS_RULES.length} signature rules · pattern + rate-based · MITRE ATT&amp;CK mapped</p>
-        </div>
-        <div style={{fontSize:10,color:"var(--text2)",fontFamily:"'JetBrains Mono',monospace"}}>{totalHits} total hits</div>
+      <div style={{marginBottom:14}}>
+        <h2 style={{fontSize:15,fontWeight:700,color:"var(--text0)"}}>Rule Coverage</h2>
+        <p style={{fontSize:11,color:"var(--text2)",marginTop:3}}>{NIDS_RULES.length} signature rules · pattern + rate-based · no ML</p>
       </div>
       {byCat.map(([cat,rules])=>(
         <div key={cat} style={{marginBottom:18}}>
@@ -553,20 +542,19 @@ function RulesView({ alerts }) {
             <span style={{width:8,height:8,borderRadius:2,background:NIDS_CAT_COLOR[cat]||"var(--text2)",flexShrink:0}}/>
             <span style={{fontSize:11,fontWeight:600,color:"var(--text1)",textTransform:"uppercase",letterSpacing:"0.08em"}}>{cat}</span>
             <span style={{fontSize:10,color:"var(--text3)"}}>{rules.length} rules</span>
-            <span style={{fontSize:10,color:"var(--text3)",marginLeft:"auto"}}>{rules.reduce((s,r)=>s+(counts[r.name]||0),0)} hits</span>
+            <span style={{fontSize:10,color:"var(--text3)",marginLeft:"auto"}}>{rules.reduce((s,r)=>s+(counts[r.name]||0),0)} total hits</span>
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
             {rules.map(r=>{
               const c=counts[r.name]||0;
-              const sv=NIDS_SEV[r.sev];
+              const s=NIDS_SEV[r.sev];
               return (
-                <div key={r.name} style={{background:"var(--bg3)",border:`1px solid ${c>0?"var(--border-md)":"var(--border)"}`,borderRadius:7,padding:"8px 12px",borderLeft:`2px solid ${c>0?sv.color:"var(--bg5)"}`,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                <div key={r.name} style={{background:"var(--bg3)",border:`1px solid ${c>0?"var(--border-md)":"var(--border)"}`,borderRadius:7,padding:"8px 12px",borderLeft:`2px solid ${c>0?s.color:"var(--bg5)"}`,display:"flex",alignItems:"center",gap:10}}>
                   <SevBadge sev={r.sev} small/>
-                  <span style={{flex:1,fontSize:12,fontWeight:c>0?500:400,color:c>0?"var(--text0)":"var(--text2)",minWidth:100}}>{r.name}</span>
-                  <span style={{fontSize:9,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace",background:"var(--bg5)",padding:"1px 6px",borderRadius:3,flexShrink:0}}>{r.type}</span>
-                  {r.mitre&&<MitreBadge id={r.mitre}/>}
-                  {c>0&&<div style={{width:60,height:3,background:"var(--bg5)",borderRadius:2,flexShrink:0}}><div style={{height:3,background:sv.color,borderRadius:2,width:`${(c/maxC)*100}%`,opacity:0.65}}/></div>}
-                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,color:c>0?sv.color:"var(--text3)",width:28,textAlign:"right",flexShrink:0}}>{c||"—"}</span>
+                  <span style={{flex:1,fontSize:12,fontWeight:c>0?500:400,color:c>0?"var(--text0)":"var(--text2)"}}>{r.name}</span>
+                  <span style={{fontSize:9,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace",background:"var(--bg5)",padding:"1px 6px",borderRadius:3}}>{r.type}</span>
+                  {c>0&&<div style={{width:60,height:3,background:"var(--bg5)",borderRadius:2}}><div style={{height:3,background:s.color,borderRadius:2,width:`${(c/maxC)*100}%`,opacity:0.65}}/></div>}
+                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,color:c>0?s.color:"var(--text3)",width:28,textAlign:"right"}}>{c||"—"}</span>
                 </div>
               );
             })}
@@ -582,21 +570,13 @@ function AnalyticsView({ alerts }) {
   const topPorts=useMemo(()=>{const m={};alerts.forEach(a=>{if(a.dst_port)m[a.dst_port]=(m[a.dst_port]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([port,count])=>({port,count}));},[alerts]);
   const topRules=useMemo(()=>{const m={};alerts.forEach(a=>{m[a.rule]=(m[a.rule]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([rule,count])=>({rule,count}));},[alerts]);
   const catData=useMemo(()=>{const m={};alerts.forEach(a=>{m[a.category]=(m[a.category]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1]).map(([cat,count])=>({cat,count}));},[alerts]);
-
-  // MITRE technique frequency
-  const mitreData=useMemo(()=>{
-    const m={};alerts.forEach(a=>{if(a.mitre)m[a.mitre]=(m[a.mitre]||0)+1;});
-    return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([tech,count])=>({tech,count}));
-  },[alerts]);
-
   const total=alerts.length||1;
   return (
     <div style={{padding:20,height:"100%",overflowY:"auto"}}>
       <div style={{marginBottom:14}}>
         <h2 style={{fontSize:15,fontWeight:700,color:"var(--text0)"}}>Analytics</h2>
-        <p style={{fontSize:11,color:"var(--text2)",marginTop:3}}>{alerts.length.toLocaleString()} total events · {mitreData.length} MITRE techniques observed</p>
+        <p style={{fontSize:11,color:"var(--text2)",marginTop:3}}>{alerts.length.toLocaleString()} total events · simulated NIDS output</p>
       </div>
-
       {/* Category grid */}
       <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:12}}>
         {catData.map(({cat,count})=>{
@@ -614,267 +594,77 @@ function AnalyticsView({ alerts }) {
           );
         })}
       </div>
-
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
         <ChartCard title="Top Source IPs"><div style={{height:210}}><HBarChart data={topIPs} color="var(--cyan)" labelKey="ip" valueKey="count"/></div></ChartCard>
         <ChartCard title="Top Target Ports"><div style={{height:210}}><HBarChart data={topPorts} color="var(--purple)" labelKey="port" valueKey="count"/></div></ChartCard>
         <ChartCard title="Top Rules"><div style={{height:210}}><HBarChart data={topRules} color="var(--orange)" labelKey="rule" valueKey="count"/></div></ChartCard>
       </div>
-
-      {/* MITRE ATT&CK frequency */}
-      {mitreData.length>0&&(
-        <ChartCard title="MITRE ATT&CK Techniques Observed" subtitle="frequency across all alerts">
-          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:4}}>
-            {mitreData.map(({tech,count})=>{
-              const pct=Math.round((count/total)*100);
-              return (
-                <div key={tech} style={{background:"rgba(155,111,255,0.08)",border:"1px solid rgba(155,111,255,0.2)",borderRadius:7,padding:"8px 12px",flex:"1 1 120px",minWidth:110}}>
-                  <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:700,color:"var(--purple)",marginBottom:4}}>{tech}</div>
-                  <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:18,fontWeight:700,color:"var(--text0)",lineHeight:1}}>{count}</div>
-                  <div style={{height:2,background:"rgba(155,111,255,0.2)",borderRadius:2,margin:"5px 0 3px"}}>
-                    <div style={{height:2,background:"var(--purple)",borderRadius:2,width:`${Math.min(pct*5,100)}%`,opacity:0.8}}/>
-                  </div>
-                  <div style={{fontSize:9,color:"var(--text3)"}}>{pct}% of events</div>
-                </div>
-              );
-            })}
-          </div>
-        </ChartCard>
-      )}
-    </div>
-  );
-}
-
-// ─── ALLOWLIST VIEW ───────────────────────────────────────────────────────────
-function AllowlistView({ entries, onRefresh, apiMode }) {
-  const [input,   setInput]   = useState("");
-  const [error,   setError]   = useState("");
-  const [busy,    setBusy]    = useState(false);
-
-  const handleAdd = useCallback(async () => {
-    const val = input.trim();
-    if (!val) return;
-    setBusy(true); setError("");
-    const ok = await nidsAddAllowlistEntry(val);
-    if (ok) { setInput(""); await onRefresh(); }
-    else setError("Invalid entry — use an IP (1.2.3.4) or CIDR subnet (10.0.0.0/8)");
-    setBusy(false);
-  }, [input, onRefresh]);
-
-  const handleRemove = useCallback(async (entry) => {
-    await nidsRemoveAllowlistEntry(entry);
-    onRefresh();
-  }, [onRefresh]);
-
-  const btnStyle = (disabled) => ({
-    padding:"0 16px", height:34, borderRadius:7, fontSize:12, fontWeight:600,
-    background: disabled ? "var(--bg5)" : "rgba(0,223,160,0.15)",
-    border: `1px solid ${disabled ? "var(--border-md)" : "rgba(0,223,160,0.35)"}`,
-    color: disabled ? "var(--text3)" : "var(--green)",
-    cursor: disabled ? "not-allowed" : "pointer", transition:"all .15s",
-    fontFamily:"'Inter',sans-serif",
-  });
-
-  return (
-    <div style={{padding:20,height:"100%",overflowY:"auto"}}>
-      <div style={{marginBottom:20}}>
-        <h2 style={{fontSize:15,fontWeight:700,color:"var(--text0)"}}>IP / Subnet Allowlist</h2>
-        <p style={{fontSize:11,color:"var(--text2)",marginTop:5,lineHeight:1.7}}>
-          Allowlisted addresses are silently skipped by the detection engine — no alerts will fire for traffic originating from them.
-          Supports individual hosts (<span style={{fontFamily:"'JetBrains Mono',monospace"}}>192.168.1.5</span>) and CIDR subnets (<span style={{fontFamily:"'JetBrains Mono',monospace"}}>10.0.0.0/8</span>).
-        </p>
-      </div>
-
-      {/* Add form */}
-      <div style={{background:"var(--bg3)",border:"1px solid var(--border-md)",borderRadius:10,padding:"16px 18px",marginBottom:22,maxWidth:580}}>
-        <div style={{fontSize:11,fontWeight:600,color:"var(--text1)",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:10}}>Add Entry</div>
-        <div style={{display:"flex",gap:8}}>
-          <input
-            placeholder="e.g.  192.168.1.0/24  or  10.0.0.5"
-            value={input}
-            onChange={e=>{setInput(e.target.value);setError("");}}
-            onKeyDown={e=>e.key==="Enter"&&!busy&&apiMode&&handleAdd()}
-            disabled={!apiMode||busy}
-            style={{flex:1,fontFamily:"'JetBrains Mono',monospace",fontSize:12,height:34}}
-          />
-          <button onClick={handleAdd} disabled={busy||!apiMode||!input.trim()} style={btnStyle(busy||!apiMode||!input.trim())}>
-            {busy?"Adding…":"Add"}
-          </button>
-        </div>
-        {error&&(
-          <div style={{marginTop:8,fontSize:11,color:"var(--red)",display:"flex",alignItems:"center",gap:6}}>
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12"><circle cx="7" cy="7" r="5"/><line x1="7" y1="4.5" x2="7" y2="7"/><circle cx="7" cy="9.5" r=".6" fill="currentColor"/></svg>
-            {error}
-          </div>
-        )}
-        {!apiMode&&(
-          <div style={{marginTop:8,fontSize:10,color:"var(--amber)",fontFamily:"'JetBrains Mono',monospace"}}>
-            Backend not connected — connect the engine to manage allowlist entries.
-          </div>
-        )}
-      </div>
-
-      {/* Entries table */}
-      <div style={{background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:10,overflow:"hidden",maxWidth:740}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg2)"}}>
-          <span style={{fontSize:10,fontWeight:600,color:"var(--text2)",letterSpacing:"0.12em",textTransform:"uppercase"}}>Allowlisted Entries</span>
-          <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,color:entries.length>0?"var(--green)":"var(--text3)"}}>{entries.length} {entries.length===1?"entry":"entries"}</span>
-        </div>
-
-        {entries.length===0?(
-          <div style={{textAlign:"center",padding:"40px 20px",color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace",fontSize:12}}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" width="32" height="32" style={{display:"block",margin:"0 auto 12px",opacity:0.35}}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="8 12 11 15 16 9"/></svg>
-            No entries — all source IPs are subject to detection
-          </div>
-        ):(
-          <table style={{width:"100%",borderCollapse:"collapse"}}>
-            <thead>
-              <tr style={{background:"var(--bg2)"}}>
-                {["Entry","Type","Action"].map((h,i)=>(
-                  <th key={h} style={{padding:"7px 16px",textAlign:i===2?"right":"left",fontSize:9,fontWeight:600,color:"var(--text3)",letterSpacing:"0.1em",textTransform:"uppercase",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry,idx)=>{
-                const isSubnet = entry.includes("/");
-                const prefix   = isSubnet ? entry.split("/")[1] : null;
-                const typeLabel= isSubnet ? `Subnet /${prefix}` : "Host";
-                const typeColor= isSubnet ? "var(--purple)" : "var(--cyan)";
-                return (
-                  <tr key={entry} style={{borderTop:idx>0?"1px solid var(--border)":"none"}}>
-                    <td style={{padding:"10px 16px",fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"var(--text0)",fontWeight:500}}>{entry}</td>
-                    <td style={{padding:"10px 16px"}}>
-                      <span style={{fontSize:10,fontWeight:600,color:typeColor,background:`${typeColor}15`,border:`1px solid ${typeColor}30`,padding:"2px 8px",borderRadius:5,fontFamily:"'JetBrains Mono',monospace"}}>{typeLabel}</span>
-                    </td>
-                    <td style={{padding:"10px 16px",textAlign:"right"}}>
-                      {apiMode&&(
-                        <button onClick={()=>handleRemove(entry)} style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:6,fontSize:11,background:"rgba(255,51,85,0.08)",border:"1px solid rgba(255,51,85,0.2)",color:"var(--red)",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
-                          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" width="10" height="10"><polyline points="1 3 13 3"/><path d="M4 3V2h6v1M5 6v5M9 6v5"/><path d="M2 3l1 9h8l1-9"/></svg>
-                          Remove
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {entries.length>0&&(
-        <p style={{marginTop:10,fontSize:10,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace"}}>
-          Changes take effect within ~2 minutes in the running detection engine.
-        </p>
-      )}
     </div>
   );
 }
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App() {
-  const [alerts,setAlerts]               = useState(()=>nidsGenHistory());
-  const [newIds,setNewIds]               = useState(new Set());
-  const [paused,setPaused]               = useState(false);
-  const [nav,setNav]                     = useState("dashboard");
-  const [filter,setFilter]               = useState({sev:"",cat:"",ip:"",rule:""});
-  const [uptime,setUptime]               = useState("0:00:00");
-  const [queuePct,setQueue]              = useState(13);
-  const [pktRate,setPktRate]             = useState(87);
-  const [toasts,setToasts]               = useState([]);
-  const [blockedIPs,setBlockedIPs]       = useState(new Set());
-  const [allowlistEntries,setAllowlist]  = useState([]);
+  const [alerts,setAlerts]   = useState(()=>nidsGenHistory());
+  const [newIds,setNewIds]   = useState(new Set());
+  const [paused,setPaused]   = useState(false);
+  const [nav,setNav]         = useState("dashboard");
+  const [filter,setFilter]   = useState({sev:"",cat:"",ip:"",rule:""});
+  const [uptime,setUptime]   = useState("0:00:00");
+  const [queuePct,setQueue]  = useState(13);
+  const [pktRate,setPktRate] = useState(87);
+  const [toasts,setToasts]   = useState([]);
+  const [blockedIPs,setBlockedIPs] = useState(new Set());
   const [showShortcuts,setShowShortcuts] = useState(false);
-  const [investigateIP,setInvestigateIP] = useState(null);
-  const [apiMode,setApiMode]             = useState(false);
-  const [health,setHealth]               = useState(null);
-  const [theme,setTheme]                 = useState(()=>localStorage.getItem("nids-theme")||"dark");
-  const startRef   = useRef(Date.now());
-  const ruleSearch = useRef(null);
-
-  useEffect(()=>{
-    document.documentElement.classList.toggle("light",theme==="light");
-    localStorage.setItem("nids-theme",theme);
-  },[theme]);
-
-  const toggleTheme=useCallback(()=>setTheme(t=>t==="dark"?"light":"dark"),[]);
+  const startRef  = useRef(Date.now());
+  const ruleSearch= useRef(null);
 
   const [tweaks, setTweak] = useTweaks(/*EDITMODE-BEGIN*/{
     "refreshInterval": 5,
-    "maxRows":         80,
-    "toastCritOnly":   false,
-    "compactMode":     false
+    "maxRows": 80,
+    "toastCritOnly": false,
+    "compactMode": false
   }/*EDITMODE-END*/);
-
-  const refreshAllowlist = useCallback(async () => {
-    const data = await nidsFetchAllowlist();
-    if (data != null) setAllowlist(data);
-  }, []);
-
-  // On mount: try to connect to real backend
-  useEffect(()=>{
-    nidsFetchHealth().then(h=>{
-      if(h){ setHealth(h); }
-    });
-    nidsFetchAlerts(500).then(data=>{
-      if(data&&data.length>0){
-        setApiMode(true);
-        setAlerts(data);
-      }
-    });
-    refreshAllowlist();
-  },[]);
+  const { TweaksPanel, TweakSection, TweakSlider, TweakToggle } = window;
 
   // Block / unblock
   const handleBlock=useCallback((ip)=>{
     setBlockedIPs(s=>{const n=new Set(s);n.has(ip)?n.delete(ip):n.add(ip);return n;});
   },[]);
 
-  // Investigate — open drawer
+  // Investigate IP — set filter + switch to alerts
   const handleInvestigate=useCallback((ip)=>{
-    setInvestigateIP(ip);
+    setFilter(f=>({...f,ip}));
+    setNav("alerts");
   },[]);
 
-  // Live feed — use real API when connected, simulation otherwise
+  // Live feed
   useEffect(()=>{
     if(paused)return;
-    const iv=setInterval(async ()=>{
-      if(apiMode){
-        const since=alerts[0]?.timestamp;
-        const fresh=await nidsFetchAlerts(50, since?{since}:{});
-        if(fresh&&fresh.length>0){
-          setAlerts(prev=>[...fresh,...prev].slice(0,800));
-          const ids=new Set(fresh.map(a=>a.id));
-          setNewIds(s=>new Set([...s,...ids]));
-          setTimeout(()=>setNewIds(s=>{const c=new Set(s);ids.forEach(id=>c.delete(id));return c;}),3000);
-          const noteworthy=fresh.filter(a=>tweaks.toastCritOnly?a.severity==="CRITICAL":["CRITICAL","HIGH"].includes(a.severity));
-          if(noteworthy.length)setToasts(t=>[...noteworthy.slice(0,2),...t].slice(0,5));
-        }
-      } else {
-        const n=Math.floor(Math.random()*3)+1;
-        const batch=Array.from({length:n},()=>nidsGenAlert(new Date()));
-        setAlerts(prev=>[...batch,...prev].slice(0,600));
-        const ids=new Set(batch.map(a=>a.id));
-        setNewIds(s=>new Set([...s,...ids]));
-        setTimeout(()=>setNewIds(s=>{const c=new Set(s);ids.forEach(id=>c.delete(id));return c;}),3000);
-        const noteworthy=batch.filter(a=>tweaks.toastCritOnly?a.severity==="CRITICAL":["CRITICAL","HIGH"].includes(a.severity));
-        if(noteworthy.length)setToasts(t=>[...noteworthy.slice(0,2),...t].slice(0,5));
-      }
+    const iv=setInterval(()=>{
+      const n=Math.floor(Math.random()*3)+1;
+      const batch=Array.from({length:n},()=>nidsGenAlert(new Date()));
+      setAlerts(prev=>[...batch,...prev].slice(0,600));
+      const ids=new Set(batch.map(a=>a.id));
+      setNewIds(s=>new Set([...s,...ids]));
+      setTimeout(()=>setNewIds(s=>{const c=new Set(s);ids.forEach(id=>c.delete(id));return c;}),3000);
       setQueue(q=>Math.max(2,Math.min(90,q+Math.round(Math.random()*8-4))));
       setPktRate(r=>Math.max(20,Math.min(580,r+Math.round(Math.random()*40-20))));
+      // Toasts for CRITICAL/HIGH
+      const noteworthy=batch.filter(a=>tweaks.toastCritOnly?a.severity==="CRITICAL":["CRITICAL","HIGH"].includes(a.severity));
+      if(noteworthy.length)setToasts(t=>[...noteworthy.slice(0,2),...t].slice(0,5));
     },(tweaks.refreshInterval||5)*1000);
     return()=>clearInterval(iv);
-  },[paused,apiMode,tweaks.refreshInterval,tweaks.toastCritOnly,alerts]);
+  },[paused,tweaks.refreshInterval,tweaks.toastCritOnly]);
 
-  // Toast auto-dismiss
+  // Auto-dismiss toasts
   useEffect(()=>{
     if(!toasts.length)return;
     const iv=setTimeout(()=>setToasts(t=>t.slice(0,-1)),6000);
     return()=>clearTimeout(iv);
   },[toasts]);
 
-  // Uptime ticker
+  // Uptime
   useEffect(()=>{
     const iv=setInterval(()=>{
       const s=Math.floor((Date.now()-startRef.current)/1000);
@@ -888,22 +678,17 @@ function App() {
     const h=e=>{
       if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT")return;
       switch(e.key.toLowerCase()){
-        case "p":   setPaused(x=>!x); break;
-        case "e":   nidsExportCSV(alerts); break;
-        case "c":   setFilter({sev:"",cat:"",ip:"",rule:""}); break;
-        case "t":   toggleTheme(); break;
-        case "/":   e.preventDefault(); ruleSearch.current?.focus(); break;
-        case "?":   setShowShortcuts(x=>!x); break;
-        case "escape":
-          setShowShortcuts(false);
-          setInvestigateIP(null);
-          break;
+        case "p": setPaused(x=>!x); break;
+        case "e": nidsExportCSV(alerts); break;
+        case "c": setFilter({sev:"",cat:"",ip:"",rule:""}); break;
+        case "/": e.preventDefault(); ruleSearch.current?.focus(); break;
+        case "?": setShowShortcuts(x=>!x); break;
+        case "escape": setShowShortcuts(false); break;
         case "1": setNav("dashboard"); break;
-        case "2": setNav("alerts");    break;
-        case "3": setNav("map");       break;
-        case "4": setNav("rules");     break;
+        case "2": setNav("alerts"); break;
+        case "3": setNav("map"); break;
+        case "4": setNav("rules"); break;
         case "5": setNav("analytics"); break;
-        case "6": setNav("allowlist"); break;
       }
     };
     window.addEventListener("keydown",h);
@@ -914,46 +699,32 @@ function App() {
   const dropRate=(queuePct*0.017).toFixed(1);
   const viewProps={alerts,paused,setPaused,filter,setFilter,newIds,tweaks,blockedIPs,onBlock:handleBlock,onInvestigate:handleInvestigate,ruleSearchRef:ruleSearch,pktRate};
 
-  const openTweaks=()=>window.postMessage({type:"__activate_edit_mode"},"*");
-
   return (
     <div style={{display:"flex",height:"100vh",width:"100vw",overflow:"hidden"}}>
-      <Sidebar active={nav} setActive={setNav} critCount={critCount} blockedCount={blockedIPs.size} allowlistCount={allowlistEntries.length} health={health} apiMode={apiMode}/>
+      <Sidebar active={nav} setActive={setNav} critCount={critCount} blockedCount={blockedIPs.size}/>
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-        <Header active={nav} paused={paused} onExport={()=>nidsExportCSV(alerts)} onShortcuts={()=>setShowShortcuts(x=>!x)} onTweaks={openTweaks} onTheme={toggleTheme} theme={theme} apiMode={apiMode}/>
-        <StatusBar queuePct={queuePct} dropRate={dropRate} uptime={uptime} pktRate={pktRate} health={health} apiMode={apiMode}/>
+        <Header active={nav} paused={paused} onExport={()=>nidsExportCSV(alerts)} onShortcuts={()=>setShowShortcuts(x=>!x)}/>
+        <StatusBar queuePct={queuePct} dropRate={dropRate} uptime={uptime} pktRate={pktRate}/>
         <div style={{flex:1,overflow:"hidden",background:"var(--bg2)"}}>
           {nav==="dashboard" && <DashboardView {...viewProps}/>}
           {nav==="alerts"    && <AlertsView    {...viewProps}/>}
           {nav==="map"       && <MapView alerts={alerts} onInvestigate={handleInvestigate}/>}
           {nav==="rules"     && <RulesView     alerts={alerts}/>}
           {nav==="analytics" && <AnalyticsView alerts={alerts}/>}
-          {nav==="allowlist" && <AllowlistView entries={allowlistEntries} onRefresh={refreshAllowlist} apiMode={apiMode}/>}
         </div>
       </div>
-
-      {/* Investigate drawer */}
-      {investigateIP&&(
-        <InvestigateDrawer
-          ip={investigateIP}
-          alerts={alerts}
-          blockedIPs={blockedIPs}
-          onBlock={handleBlock}
-          onClose={()=>setInvestigateIP(null)}
-        />
-      )}
 
       <ToastContainer toasts={toasts} dismiss={id=>setToasts(t=>t.filter(x=>x.id!==id))}/>
       {showShortcuts&&<ShortcutsOverlay onClose={()=>setShowShortcuts(false)}/>}
 
-      <TweaksPanel title="Settings">
-        <TweakSection label="Live Feed">
-          <TweakSlider label="Refresh (s)"      value={tweaks.refreshInterval} min={1}  max={60}  step={1}  onChange={v=>setTweak("refreshInterval",v)}/>
-          <TweakSlider label="Max Rows"          value={tweaks.maxRows}         min={20} max={300} step={10} onChange={v=>setTweak("maxRows",v)}/>
-          <TweakToggle label="Toast: Crit only"  value={tweaks.toastCritOnly}   onChange={v=>setTweak("toastCritOnly",v)}/>
+      <TweaksPanel>
+        <TweakSection title="Live Feed">
+          <TweakSlider id="refreshInterval" label="Refresh (s)" min={1} max={60} step={1}/>
+          <TweakSlider id="maxRows" label="Max Rows" min={20} max={300} step={10}/>
+          <TweakToggle id="toastCritOnly" label="Toast: Critical only"/>
         </TweakSection>
-        <TweakSection label="Display">
-          <TweakToggle label="Compact Mode" value={tweaks.compactMode} onChange={v=>setTweak("compactMode",v)}/>
+        <TweakSection title="Display">
+          <TweakToggle id="compactMode" label="Compact Mode"/>
         </TweakSection>
       </TweaksPanel>
     </div>

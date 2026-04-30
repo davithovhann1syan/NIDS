@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TextIO
 
 import config
@@ -27,7 +27,8 @@ class Logger:
 
     def _open(self) -> TextIO:
         """Create the log directory if needed and open the file for appending."""
-        os.makedirs(os.path.dirname(self._log_path), exist_ok=True)
+        log_dir = os.path.dirname(self._log_path) or "."
+        os.makedirs(log_dir, exist_ok=True)
         return open(self._log_path, "a", buffering=1)
 
     def log(self, alert: CorrelatedAlert) -> None:
@@ -44,7 +45,7 @@ class Logger:
             alert: A CorrelatedAlert that has passed the deduplicator.
         """
         record: dict[str, object] = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             **alert,  # type: ignore[misc]
         }
         try:
