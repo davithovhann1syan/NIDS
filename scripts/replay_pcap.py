@@ -31,15 +31,10 @@ except ImportError:
 from parser.extractor import extract
 from detection.sig_detector import SignatureDetector
 from detection.correlator import Correlator
+from detection.categories import RULE_CATEGORY, SEV_ORDER
 
-# Category lookup — defined in dashboard/app.py; fall back to empty dict if unavailable.
-try:
-    from dashboard.app import RULE_CATEGORY
-except Exception:
-    RULE_CATEGORY: dict[str, str] = {}
-
-_SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
-_SEV_RANK  = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+_SEV_ORDER = SEV_ORDER
+_SEV_RANK  = {sev: i for i, sev in enumerate(reversed(SEV_ORDER))}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

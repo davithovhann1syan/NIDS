@@ -153,7 +153,7 @@ function ShortcutsOverlay({ onClose }) {
           ["C","Clear all filters"],
           ["T","Toggle light / dark mode"],
           ["/","Focus rule search"],
-          ["1–5","Switch views"],
+          ["1–7","Switch views (Dashboard · Alerts · Map · Rules · Analytics · Allowlist · PCAP)"],
           ["?","Show / hide this panel"],
           ["Esc","Close overlays / dismiss"],
         ].map(([k,d])=>(
@@ -162,7 +162,7 @@ function ShortcutsOverlay({ onClose }) {
             <span style={{fontSize:12,color:"#8fa3be"}}>{d}</span>
           </div>
         ))}
-        <button onClick={onClose} style={{marginTop:14,padding:"8px",borderRadius:6,background:"rgba(255,255,255,0.05)",color:"#8fa3be",fontSize:12,width:"100%",border:"1px solid rgba(255,255,255,0.08)"}}>Close</button>
+        <button onClick={onClose} style={{marginTop:14,padding:"8px",borderRadius:6,background:"rgba(255,255,255,0.05)",color:"#8fa3be",fontSize:12,width:"100%",border:"1px solid rgba(255,255,255,0.08)"}}>Close  <kbd style={{background:"#111",border:"1px solid rgba(255,255,255,0.14)",borderRadius:3,padding:"1px 6px",fontSize:10,marginLeft:6}}>Esc</kbd></button>
       </div>
     </div>
   );

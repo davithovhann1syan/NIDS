@@ -1,0 +1,22 @@
+# logrotate configuration for NIDS alert log.
+#
+# Install:
+#   sudo cp deploy/nids-logrotate /etc/logrotate.d/nids
+#
+# Test (dry-run):
+#   sudo logrotate --debug /etc/logrotate.d/nids
+
+/opt/nids/logs/nids.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+    postrotate
+        # Send SIGHUP so the logger reopens the new log file without restarting.
+        # alerting/logger.py handles SIGHUP via signal.signal(signal.SIGHUP, ...).
+        systemctl kill -s HUP nids 2>/dev/null || true
+    endscript
+}

@@ -1,6 +1,7 @@
 logs/
 .env
 CLAUDE.md
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -8,3 +9,5 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+writeup.txt
+report.txt

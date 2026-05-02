@@ -1,0 +1,28 @@
+# systemd service unit for NIDS dashboard (web UI)
+# Runs as a normal user — no root required.
+#
+# Install:
+#   sudo cp deploy/nids-dashboard.service /etc/systemd/system/nids-dashboard.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nids-dashboard
+#
+# Access the dashboard at http://localhost:5000
+
+[Unit]
+Description=NIDS Dashboard — Web monitoring interface
+After=network.target nids.service
+Wants=nids.service
+
+[Service]
+Type=simple
+User=nids
+WorkingDirectory=/opt/nids
+EnvironmentFile=/opt/nids/.env
+ExecStart=/opt/nids/.venv/bin/python -m dashboard.app
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

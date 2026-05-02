@@ -59,14 +59,160 @@ const NAV = [
   { id:"rules",     label:"Rules",      icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M10 18s7-3.5 7-8.75V4.25L10 2 3 4.25V9.25C3 14.5 10 18 10 18z"/></svg> },
   { id:"analytics", label:"Analytics",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><polyline points="18 10 15 10 12.5 17.5 7.5 2.5 5 10 2 10"/></svg> },
   { id:"allowlist", label:"Allowlist",  icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M10 18s7-3.5 7-8.75V4.25L10 2 3 4.25V9.25C3 14.5 10 18 10 18z"/><polyline points="6.5 10 9 12.5 13.5 7.5"/></svg> },
+  { id:"pcap",      label:"PCAP Analysis", icon:<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16"><path d="M12 2H5a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M12 2v6h6"/><path d="M7 12h6M7 15h4"/></svg> },
 ];
 
-function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, health, apiMode }) {
+function CapturePanel({ captureStatus, onCaptureStart, onCaptureStop }) {
+  const [ifaceInput, setIfaceInput] = useState(captureStatus?.interface || "wlan0");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr]   = useState(null);
+
+  const running  = captureStatus?.running ?? false;
+  const external = captureStatus?.external ?? false;
+  const uptime_s = captureStatus?.uptime_s ?? 0;
+
+  const fmtUptime = s => {
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+    return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+  };
+
+  const handleStart = async () => {
+    setBusy(true); setErr(null);
+    const res = await onCaptureStart(ifaceInput);
+    if (res?.error) setErr(res.error);
+    setBusy(false);
+  };
+  const handleStop = async () => {
+    setBusy(true); setErr(null);
+    const res = await onCaptureStop();
+    if (res?.error) setErr(res.error);
+    setBusy(false);
+  };
+
+  const dotColor = running ? "var(--green)" : "var(--text3)";
+  const btnStyle = running
+    ? {background:"rgba(255,51,85,0.1)",border:"1px solid rgba(255,51,85,0.3)",color:"var(--red)"}
+    : {background:"rgba(0,223,160,0.1)",border:"1px solid rgba(0,223,160,0.3)",color:"var(--green)"};
+
+  return (
+    <div style={{margin:"8px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--border)",padding:"10px 10px 8px"}}>
+      <div style={{fontSize:9,fontWeight:700,color:"var(--text3)",letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:8}}>Capture Engine</div>
+
+      {/* Status row */}
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+        <LiveDot color={dotColor} size={7} animate={running}/>
+        <span style={{fontSize:11,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",
+          color:running?"var(--green)":"var(--text3)",flex:1}}>
+          {running ? "RUNNING" : "STOPPED"}
+        </span>
+        {running && external && (
+          <span style={{fontSize:8,color:"var(--text2)",fontFamily:"'JetBrains Mono',monospace"}}>EXT</span>
+        )}
+      </div>
+
+      {/* Running info or interface input */}
+      {running ? (
+        <div style={{marginBottom:7}}>
+          <div style={{fontSize:9,color:"var(--text2)",fontFamily:"'JetBrains Mono',monospace",marginBottom:2}}>
+            iface: <span style={{color:"var(--cyan)"}}>{captureStatus?.interface || "?"}</span>
+          </div>
+          {!external && uptime_s > 0 && (
+            <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace"}}>
+              up {fmtUptime(uptime_s)}
+            </div>
+          )}
+          {captureStatus?.pid && (
+            <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace"}}>
+              pid {captureStatus.pid}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{marginBottom:7}}>
+          <div style={{fontSize:9,color:"var(--text3)",marginBottom:3}}>Interface</div>
+          <input
+            value={ifaceInput}
+            onChange={e=>setIfaceInput(e.target.value)}
+            placeholder="wlan0"
+            style={{width:"100%",fontSize:11,padding:"4px 7px",fontFamily:"'JetBrains Mono',monospace"}}
+          />
+        </div>
+      )}
+
+      {/* Start / Stop button */}
+      <button
+        onClick={running ? handleStop : handleStart}
+        disabled={busy}
+        style={{width:"100%",padding:"6px",borderRadius:5,fontSize:11,fontWeight:600,
+          cursor:busy?"wait":"pointer",opacity:busy?0.6:1,...btnStyle}}
+      >
+        {busy ? "…" : running ? "⏹ Stop Capture" : "▶ Start Capture"}
+      </button>
+
+      {/* Error message */}
+      {err && (
+        <div style={{marginTop:6,fontSize:9,color:"var(--red)",lineHeight:1.4,wordBreak:"break-word"}}
+             title={err}>
+          {err.length>120 ? err.slice(0,117)+"…" : err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, health, apiMode, captureStatus, onCaptureStart, onCaptureStop, collapsed, onToggle }) {
   const iface = health?.interface || "—";
   const ruleCount = health?.rules_active || NIDS_RULES.length;
+
+  const toggleBtn = (
+    <button onClick={onToggle} title={collapsed?"Expand sidebar":"Collapse sidebar"} style={{
+      display:"flex",alignItems:"center",justifyContent:"center",
+      width:28,height:28,borderRadius:6,border:"1px solid var(--border-md)",
+      color:"var(--text3)",flexShrink:0,transition:"all .15s",
+    }}>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
+        {collapsed
+          ? <path d="M6 3l5 5-5 5"/>
+          : <path d="M10 3L5 8l5 5"/>}
+      </svg>
+    </button>
+  );
+
+  if (collapsed) {
+    return (
+      <div style={{width:52,background:"var(--bg1)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",flexShrink:0,alignItems:"center"}}>
+        <div style={{height:52,display:"flex",alignItems:"center",justifyContent:"center",borderBottom:"1px solid var(--border)",flexShrink:0,width:"100%"}}>
+          <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
+            <circle cx="12" cy="12" r="9" stroke="#00d4ff" strokeWidth="1.5"/>
+            <circle cx="12" cy="12" r="5" stroke="#00d4ff" strokeWidth="1" strokeDasharray="2 2"/>
+            <circle cx="12" cy="12" r="2" fill="#00d4ff"/>
+            <line x1="12" y1="3" x2="12" y2="7" stroke="#00d4ff" strokeWidth="1.5"/>
+          </svg>
+        </div>
+        <div style={{padding:"8px 0",flex:1,display:"flex",flexDirection:"column",gap:2,overflowY:"auto",alignItems:"center",width:"100%"}}>
+          {NAV.map(n=>(
+            <button key={n.id} onClick={()=>setActive(n.id)} title={n.label} style={{
+              display:"flex",alignItems:"center",justifyContent:"center",padding:"9px",borderRadius:7,width:38,
+              color:active===n.id?"var(--cyan)":"var(--text2)",
+              background:active===n.id?"rgba(0,212,255,0.08)":"transparent",
+              border:`1px solid ${active===n.id?"rgba(0,212,255,0.2)":"transparent"}`,
+              transition:"all .15s",position:"relative",
+            }}>
+              {n.icon}
+              {n.id==="alerts"&&critCount>0&&<span style={{position:"absolute",top:5,right:5,width:5,height:5,borderRadius:"50%",background:"var(--red)"}}/>}
+            </button>
+          ))}
+        </div>
+        <div style={{padding:"8px 0",borderTop:"1px solid var(--border)",display:"flex",justifyContent:"center",width:"100%"}}>
+          {toggleBtn}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{width:196,background:"var(--bg1)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",flexShrink:0}}>
-      <div style={{height:52,display:"flex",alignItems:"center",gap:10,padding:"0 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
+      <div style={{height:52,display:"flex",alignItems:"center",gap:10,padding:"0 12px 0 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
         <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
           <circle cx="12" cy="12" r="9" stroke="#00d4ff" strokeWidth="1.5"/>
           <circle cx="12" cy="12" r="5" stroke="#00d4ff" strokeWidth="1" strokeDasharray="2 2"/>
@@ -74,10 +220,11 @@ function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, h
           <line x1="12" y1="3" x2="12" y2="7" stroke="#00d4ff" strokeWidth="1.5"/>
           <line x1="21" y1="12" x2="17" y2="12" stroke="#00d4ff" strokeWidth="1.5"/>
         </svg>
-        <div>
+        <div style={{flex:1}}>
           <div style={{fontSize:11,fontWeight:700,color:"var(--text0)",letterSpacing:"0.08em",fontFamily:"'JetBrains Mono',monospace"}}>NIDS</div>
           <div style={{fontSize:9,color:"var(--text2)",letterSpacing:"0.1em",textTransform:"uppercase"}}>Signature-based</div>
         </div>
+        {toggleBtn}
       </div>
 
       <div style={{padding:"12px 8px",flex:1,display:"flex",flexDirection:"column",gap:2,overflowY:"auto"}}>
@@ -111,13 +258,21 @@ function Sidebar({ active, setActive, critCount, blockedCount, allowlistCount, h
         ))}
       </div>
 
-      <div style={{padding:"12px 14px",borderTop:"1px solid var(--border)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:5}}>
+      {apiMode && (
+        <CapturePanel
+          captureStatus={captureStatus}
+          onCaptureStart={onCaptureStart}
+          onCaptureStop={onCaptureStop}
+        />
+      )}
+
+      <div style={{padding:"10px 14px",borderTop:"1px solid var(--border)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
           <LiveDot color={apiMode?"var(--green)":"var(--amber)"} size={7}/>
           <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:apiMode?"var(--green)":"var(--amber)"}}>{apiMode?"LIVE MODE":"DEMO MODE"}</span>
         </div>
         <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6}}>
-          Scapy · Flask · Python<br/>{apiMode?"Connected to engine":"Simulated data"}
+          {apiMode?"Engine connected · real alerts":"Simulated data · start capture to go live"}
         </div>
       </div>
     </div>
@@ -176,17 +331,19 @@ function Header({ active, paused, onExport, onShortcuts, onTweaks, onTheme, them
 }
 
 // ─── STATUS BAR ───────────────────────────────────────────────────────────────
-function StatusBar({ queuePct, dropRate, uptime, pktRate, health, apiMode }) {
+function StatusBar({ queuePct, dropRate, uptime, pktRate, health, apiMode, captureStatus }) {
   const iface = health?.interface || "—";
   const logSize = health?.log_size || "—";
+  const capRunning = captureStatus?.running ?? false;
   const items=[
-    {l:"INTERFACE", v:iface,            ok:true},
-    {l:"QUEUE",     v:`${queuePct}%`,   ok:queuePct<80, warn:queuePct>=50},
-    {l:"DROP RATE", v:`${dropRate}%`,   ok:parseFloat(dropRate)<1},
-    {l:"UPTIME",    v:uptime,           ok:true},
-    {l:"PKT/S",     v:pktRate,          ok:pktRate<400},
-    {l:"LOG",       v:logSize,          ok:health?.log_exists!==false},
-    {l:"MODE",      v:apiMode?"LIVE":"DEMO", ok:apiMode},
+    {l:"ENGINE",    v:capRunning?"RUNNING":"STOPPED", ok:capRunning, title:"Detection engine status"},
+    {l:"INTERFACE", v:iface,            ok:true,               title:"Capture network interface"},
+    {l:"QUEUE",     v:`${queuePct}%`,   ok:queuePct<80, warn:queuePct>=50, title:"Packet queue fill level"},
+    {l:"DROP RATE", v:`${dropRate}%`,   ok:parseFloat(dropRate)<1, title:"Estimated packet drop rate"},
+    {l:"UPTIME",    v:uptime,           ok:true,               title:"Dashboard session uptime"},
+    {l:"PKT/S",     v:pktRate,          ok:pktRate<400,        title:"Current packets per second"},
+    {l:"LOG",       v:logSize,          ok:health?.log_exists!==false, title:"Alert log file size"},
+    {l:"MODE",      v:apiMode?"LIVE":"DEMO", ok:apiMode,        title:apiMode?"Connected to real engine":"Simulated demo data — start capture for live alerts"},
   ];
   return (
     <div style={{height:30,background:"var(--bg1)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",padding:"0 20px",gap:0,overflowX:"auto",flexShrink:0}}>
@@ -194,8 +351,8 @@ function StatusBar({ queuePct, dropRate, uptime, pktRate, health, apiMode }) {
         <React.Fragment key={item.l}>
           {i>0&&<div style={{width:1,height:13,background:"var(--border-md)",margin:"0 13px"}}/>}
           <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-            <span style={{fontSize:9,fontFamily:"'JetBrains Mono',monospace",color:"var(--text3)",letterSpacing:"0.1em"}}>{item.l}</span>
-            <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:!item.ok?"var(--red)":item.warn?"var(--amber)":"var(--text1)"}}>{item.v}</span>
+            <span title={item.title} style={{fontSize:9,fontFamily:"'JetBrains Mono',monospace",color:"var(--text3)",letterSpacing:"0.1em",cursor:"help"}}>{item.l}</span>
+            <span title={item.title} style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:!item.ok?"var(--red)":item.warn?"var(--amber)":"var(--text1)",cursor:"help"}}>{item.v}</span>
           </div>
         </React.Fragment>
       ))}
@@ -428,7 +585,7 @@ function AlertTable({ alerts, paused, setPaused, filter, setFilter, newIds, maxR
 }
 
 // ─── VIEWS ────────────────────────────────────────────────────────────────────
-function DashboardView({ alerts, paused, setPaused, filter, setFilter, newIds, tweaks, blockedIPs, onBlock, onInvestigate, ruleSearchRef, pktRate }) {
+function DashboardView({ alerts, paused, setPaused, filter, setFilter, newIds, tweaks, blockedIPs, onBlock, onInvestigate, ruleSearchRef, pktRate, apiMode }) {
   const crit=alerts.filter(a=>a.severity==="CRITICAL").length;
   const high=alerts.filter(a=>a.severity==="HIGH").length;
   const today=useMemo(()=>alerts.filter(a=>new Date(a.timestamp).toDateString()===new Date().toDateString()).length,[alerts]);
@@ -447,6 +604,15 @@ function DashboardView({ alerts, paused, setPaused, filter, setFilter, newIds, t
           <PacketRateGauge rate={pktRate}/>
         </div>
       </div>
+      {!apiMode&&(
+        <div style={{padding:"8px 20px 0",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"9px 16px",background:"rgba(255,190,46,0.05)",border:"1px solid rgba(255,190,46,0.2)",borderRadius:8}}>
+            <svg viewBox="0 0 16 16" fill="none" stroke="#ffbe2e" strokeWidth="1.5" width="14" height="14"><circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="8.5"/><circle cx="8" cy="10.5" r=".6" fill="#ffbe2e"/></svg>
+            <span style={{fontSize:11,color:"var(--amber)",fontWeight:600}}>Demo Mode</span>
+            <span style={{fontSize:11,color:"var(--text2)"}}>Showing simulated traffic. Use the capture panel in the sidebar to connect the detection engine.</span>
+          </div>
+        </div>
+      )}
       <div style={{padding:"10px 20px 0",flexShrink:0}}><ThreatPosture alerts={alerts}/></div>
       <div style={{padding:"10px 20px 0",display:"grid",gridTemplateColumns:"1fr 210px",gap:10,flexShrink:0}}>
         <ChartCard title="Alerts Over Time" subtitle="Last 24 hours · by hour">
@@ -772,6 +938,652 @@ function AllowlistView({ entries, onRefresh, apiMode }) {
   );
 }
 
+// ─── PCAP ANALYSIS VIEW ───────────────────────────────────────────────────────
+
+const PCAP_SEV_COLORS = {CRITICAL:'#ff3355',HIGH:'#ff7c2a',MEDIUM:'#ffbe2e',LOW:'#4a8fff'};
+const PCAP_SEV_ORDER  = ['CRITICAL','HIGH','MEDIUM','LOW'];
+const PCAP_SEV_RANK   = {LOW:0,MEDIUM:1,HIGH:2,CRITICAL:3};
+
+function useChartJs(canvasRef, buildConfig) {
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    const cfg = buildConfig();
+    if (!cfg) return;
+    try { Chart.getChart(canvasRef.current)?.destroy(); } catch(e) {}
+    let chart;
+    try { chart = new Chart(canvasRef.current, cfg); } catch(e) {}
+    return () => { try { chart?.destroy(); } catch(e) {} };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+function PcapSevBadge({ sev }) {
+  const bg   = {CRITICAL:'rgba(255,51,85,0.15)',HIGH:'rgba(255,124,42,0.15)',MEDIUM:'rgba(255,190,46,0.15)',LOW:'rgba(74,143,255,0.15)'};
+  const clr  = {CRITICAL:'var(--red)',HIGH:'var(--orange)',MEDIUM:'var(--amber)',LOW:'var(--blue)'};
+  return <span style={{display:'inline-flex',alignItems:'center',padding:'2px 7px',borderRadius:4,
+    fontSize:10,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",letterSpacing:'.04em',
+    background:bg[sev]||bg.LOW,color:clr[sev]||clr.LOW}}>{sev}</span>;
+}
+
+function PcapBox({ title, children, style={} }) {
+  return (
+    <div style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:10,padding:16,...style}}>
+      {title&&<div style={{fontSize:10,fontWeight:600,color:'var(--text2)',letterSpacing:'.1em',
+        textTransform:'uppercase',marginBottom:14}}>{title}</div>}
+      {children}
+    </div>
+  );
+}
+
+function PcapUploadScreen({ onFile }) {
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef(null);
+  const pick = (file) => {
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['pcap','pcapng','cap'].includes(ext)) { alert('Select a .pcap, .pcapng, or .cap file.'); return; }
+    onFile(file);
+  };
+  return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+      height:'100%',padding:40,gap:24,overflowY:'auto'}}>
+      <div style={{textAlign:'center',maxWidth:520}}>
+        <div style={{fontSize:20,fontWeight:700,color:'var(--text0)',marginBottom:8,
+          fontFamily:"'JetBrains Mono',monospace",letterSpacing:'.03em'}}>PCAP Analysis</div>
+        <div style={{fontSize:13,color:'var(--text2)',lineHeight:1.6}}>
+          Drop a packet capture to run it through 70+ NIDS signatures — port scans, brute force, C2, exfiltration and more.
+        </div>
+      </div>
+      <div onClick={()=>fileRef.current?.click()}
+        onDragOver={e=>{e.preventDefault();setDragging(true);}}
+        onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget))setDragging(false);}}
+        onDrop={e=>{e.preventDefault();setDragging(false);pick(e.dataTransfer.files[0]);}}
+        style={{width:'100%',maxWidth:520,background:dragging?'rgba(0,212,255,0.04)':'var(--bg3)',
+          border:`2px dashed ${dragging?'var(--cyan)':'var(--border-md)'}`,
+          borderRadius:14,padding:'48px 32px',display:'flex',flexDirection:'column',
+          alignItems:'center',gap:16,cursor:'pointer',transition:'border-color .2s,background .2s',textAlign:'center'}}>
+        <div style={{width:56,height:56,borderRadius:14,background:'rgba(0,212,255,0.08)',
+          border:'1px solid rgba(0,212,255,0.2)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#00d4ff" strokeWidth="1.5" width="28" height="28">
+            <path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/>
+          </svg>
+        </div>
+        <div style={{fontSize:15,fontWeight:600,color:'var(--text0)'}}>Drop your capture file here</div>
+        <div style={{fontSize:12,color:'var(--text2)'}}>or click anywhere to browse</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center'}}>
+          {['.pcap','.pcapng','.cap'].map(ext=>(
+            <span key={ext} style={{padding:'3px 10px',borderRadius:20,fontSize:10,fontWeight:700,
+              fontFamily:"'JetBrains Mono',monospace",letterSpacing:'.06em',
+              background:'var(--bg4)',border:'1px solid var(--border-md)',color:'var(--text2)'}}>{ext}</span>
+          ))}
+        </div>
+        <input ref={fileRef} type="file" accept=".pcap,.pcapng,.cap" style={{display:'none'}}
+          onChange={e=>pick(e.target.files?.[0])}/>
+      </div>
+      <div style={{fontSize:11,color:'var(--text3)',textAlign:'center'}}>
+        Max 500 MB · No data leaves your machine · Analysis runs locally
+      </div>
+    </div>
+  );
+}
+
+function PcapAnalyzingScreen({ filename }) {
+  return (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%'}}>
+      <div style={{width:'100%',maxWidth:520,background:'var(--bg3)',border:'1px solid var(--border-md)',
+        borderRadius:14,padding:'48px 32px',display:'flex',flexDirection:'column',
+        alignItems:'center',gap:20,textAlign:'center'}}>
+        <div style={{display:'flex',gap:6}}>
+          {[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:'50%',background:'var(--cyan)',
+            animation:'nids-pulse .8s ease-in-out infinite',animationDelay:`${i*0.15}s`}}/>)}
+        </div>
+        <div>
+          <div style={{fontSize:15,fontWeight:600,color:'var(--text0)'}}>Analyzing capture file…</div>
+          {filename&&<div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:'var(--cyan)'}}>{filename}</div>}
+        </div>
+        <div style={{fontSize:12,color:'var(--text2)'}}>
+          Running 70+ detection signatures against every packet.<br/>This may take a moment for large files.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PcapErrorScreen({ message, onReset }) {
+  return (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%'}}>
+      <div style={{width:'100%',maxWidth:520,background:'rgba(255,51,85,0.05)',
+        border:'1px solid rgba(255,51,85,0.25)',borderRadius:14,padding:32,
+        display:'flex',flexDirection:'column',alignItems:'center',gap:16,textAlign:'center'}}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#ff3355" strokeWidth="1.5" width="36" height="36">
+          <circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>
+        </svg>
+        <div style={{fontSize:14,fontWeight:600,color:'var(--red)'}}>Analysis Failed</div>
+        <div style={{fontSize:12,color:'var(--text1)',lineHeight:1.5,maxWidth:400}}>{message}</div>
+        <button onClick={onReset} style={{padding:'8px 20px',borderRadius:7,fontSize:12,fontWeight:600,
+          background:'rgba(255,51,85,0.1)',border:'1px solid rgba(255,51,85,0.3)',
+          color:'var(--red)',cursor:'pointer'}}>Try Another File</button>
+      </div>
+    </div>
+  );
+}
+
+function PcapOverviewTab({ data }) {
+  const { meta, by_severity:bySev, by_category, top_rules, top_ips } = data;
+  const total = meta.total_alerts;
+  const sevLabels = PCAP_SEV_ORDER.filter(s=>bySev[s]>0);
+  const catEntries = Object.entries(by_category).slice(0,10);
+  const rules = top_rules.slice(0,12);
+
+  let vBg,vBorder,vColor,vText;
+  if(bySev.CRITICAL>0){vBg='rgba(255,51,85,0.07)';vBorder='rgba(255,51,85,0.3)';vColor='var(--red)';vText=`CRITICAL THREATS — ${bySev.CRITICAL} critical, ${bySev.HIGH} high alerts`;}
+  else if(bySev.HIGH>0){vBg='rgba(255,124,42,0.07)';vBorder='rgba(255,124,42,0.3)';vColor='var(--orange)';vText=`HIGH-SEVERITY THREATS — ${bySev.HIGH} high alerts`;}
+  else if(bySev.MEDIUM>0){vBg='rgba(255,190,46,0.07)';vBorder='rgba(255,190,46,0.3)';vColor='var(--amber)';vText=`MEDIUM ACTIVITY — ${bySev.MEDIUM} alerts`;}
+  else if(total>0){vBg='rgba(74,143,255,0.07)';vBorder='rgba(74,143,255,0.3)';vColor='var(--blue)';vText=`LOW ACTIVITY — ${bySev.LOW} alerts`;}
+  else{vBg='rgba(0,223,160,0.07)';vBorder='rgba(0,223,160,0.3)';vColor='var(--green)';vText='NO THREATS DETECTED';}
+
+  const CHART_TOOLTIP = {backgroundColor:'rgba(9,12,22,0.95)',borderColor:'rgba(255,255,255,0.1)',
+    borderWidth:1,titleColor:'#eef2f8',bodyColor:'#8fa3be',padding:10,cornerRadius:8};
+
+  const sevRef=useRef(null), catRef=useRef(null), rulesRef=useRef(null);
+
+  useChartJs(sevRef, ()=>!sevLabels.length?null:({
+    type:'doughnut',
+    data:{labels:sevLabels,datasets:[{data:sevLabels.map(s=>bySev[s]),
+      backgroundColor:sevLabels.map(s=>PCAP_SEV_COLORS[s]),borderColor:'#090c16',borderWidth:3,hoverOffset:8}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#8fa3be',font:{size:11}},position:'right'},tooltip:CHART_TOOLTIP},cutout:'62%'}
+  }));
+  useChartJs(catRef, ()=>!catEntries.length?null:({
+    type:'bar',
+    data:{labels:catEntries.map(c=>c[0]),datasets:[{data:catEntries.map(c=>c[1]),
+      backgroundColor:catEntries.map((_,i)=>`hsla(${200+i*18},70%,60%,0.7)`),
+      borderColor:catEntries.map((_,i)=>`hsla(${200+i*18},70%,60%,1)`),borderWidth:1,borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{legend:{display:false},tooltip:CHART_TOOLTIP},
+      scales:{x:{ticks:{color:'#4e6278',maxTicksLimit:6},grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+              y:{ticks:{color:'#8fa3be',font:{size:11}},grid:{display:false},border:{display:false}}}}
+  }));
+  useChartJs(rulesRef, ()=>!rules.length?null:({
+    type:'bar',
+    data:{labels:rules.map(r=>r.rule),datasets:[{data:rules.map(r=>r.count),
+      backgroundColor:rules.map(r=>PCAP_SEV_COLORS[r.severity]+'99'),
+      borderColor:rules.map(r=>PCAP_SEV_COLORS[r.severity]),borderWidth:1,borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{legend:{display:false},tooltip:CHART_TOOLTIP},
+      scales:{x:{ticks:{color:'#4e6278',maxTicksLimit:6},grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+              y:{ticks:{color:'#8fa3be',font:{size:11}},grid:{display:false},border:{display:false}}}}
+  }));
+
+  return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:14,overflowY:'auto',height:'100%'}}>
+      <div style={{display:'flex',alignItems:'center',gap:12,padding:'12px 18px',borderRadius:10,
+        border:'1px solid',borderColor:vBorder,background:vBg,color:vColor,fontSize:13,fontWeight:600,flexWrap:'wrap'}}>
+        {vText}
+        <span style={{fontSize:11,fontWeight:400,color:'var(--text1)',marginLeft:8}}>
+          · {total} alerts · {top_ips.length} attackers · {meta.pcap_file}
+        </span>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:10}}>
+        {[{l:'Total',v:total.toLocaleString(),sub:`${top_ips.length} attackers`},
+          {l:'Critical',v:bySev.CRITICAL,c:'var(--red)',   sub:`${total?(bySev.CRITICAL/total*100).toFixed(1):0}%`},
+          {l:'High',    v:bySev.HIGH,    c:'var(--orange)',sub:`${total?(bySev.HIGH/total*100).toFixed(1):0}%`},
+          {l:'Medium',  v:bySev.MEDIUM,  c:'var(--amber)', sub:`${total?(bySev.MEDIUM/total*100).toFixed(1):0}%`},
+          {l:'Low',     v:bySev.LOW,     c:'var(--blue)',  sub:`${total?(bySev.LOW/total*100).toFixed(1):0}%`},
+        ].map(c=>(
+          <div key={c.l} style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:10,padding:'14px 16px'}}>
+            <div style={{fontSize:9,fontWeight:600,color:'var(--text2)',letterSpacing:'.12em',textTransform:'uppercase'}}>{c.l}</div>
+            <div style={{fontSize:22,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:c.c||'var(--text0)',lineHeight:1,marginTop:4}}>{c.v}</div>
+            <div style={{fontSize:10,color:'var(--text2)',marginTop:4}}>{c.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'260px 1fr',gap:14}}>
+        <PcapBox title="Severity Distribution"><div style={{position:'relative',height:200}}><canvas ref={sevRef}/></div></PcapBox>
+        <PcapBox title="Alert Categories"><div style={{position:'relative',height:200}}><canvas ref={catRef}/></div></PcapBox>
+      </div>
+      <PcapBox title="Top Rules Triggered">
+        <div style={{position:'relative',height:Math.max(120,rules.length*24)}}><canvas ref={rulesRef}/></div>
+      </PcapBox>
+    </div>
+  );
+}
+
+function PcapAlertsTab({ alerts, onInvestigate }) {
+  const [filter,setFilter] = useState({sev:'',ip:'',rule:''});
+  const [sort,setSort]     = useState({col:'timestamp',dir:-1});
+  const [page,setPage]     = useState(0);
+  const PAGE = 50;
+
+  const filtered = useMemo(()=>{
+    let rows = alerts.filter(a=>{
+      if(filter.sev  && a.severity!==filter.sev) return false;
+      if(filter.ip   && !(a.src_ip||'').toLowerCase().includes(filter.ip.toLowerCase())) return false;
+      if(filter.rule && !(a.rule||'').toLowerCase().includes(filter.rule.toLowerCase())) return false;
+      return true;
+    });
+    rows.sort((a,b)=>{
+      let av=a[sort.col]??'',bv=b[sort.col]??'';
+      if(sort.col==='severity'){av=PCAP_SEV_ORDER.indexOf(av);bv=PCAP_SEV_ORDER.indexOf(bv);}
+      if(sort.col==='threat_score'||sort.col==='dst_port'){av=av||0;bv=bv||0;}
+      return av<bv?sort.dir:av>bv?-sort.dir:0;
+    });
+    return rows;
+  },[alerts,filter,sort]);
+
+  const pages = Math.max(1,Math.ceil(filtered.length/PAGE));
+  const pg    = Math.min(page,pages-1);
+  const slice = filtered.slice(pg*PAGE,(pg+1)*PAGE);
+
+  const TH = ({col,label})=>(
+    <th onClick={()=>{setSort(s=>s.col===col?{...s,dir:-s.dir}:{col,dir:-1});setPage(0);}}
+      style={{padding:'8px 12px',textAlign:'left',fontSize:10,fontWeight:600,
+        color:sort.col===col?'var(--cyan)':'var(--text2)',letterSpacing:'.08em',textTransform:'uppercase',
+        borderBottom:'1px solid var(--border)',background:'var(--bg2)',whiteSpace:'nowrap',
+        cursor:'pointer',userSelect:'none'}}>
+      {label}{sort.col===col?(sort.dir>0?' ↑':' ↓'):''}
+    </th>
+  );
+
+  const td = {padding:'8px 12px',borderBottom:'1px solid var(--border)',fontSize:12,color:'var(--text1)',verticalAlign:'middle'};
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,padding:'9px 14px',
+        borderBottom:'1px solid var(--border)',background:'var(--bg2)',flexWrap:'wrap',flexShrink:0}}>
+        <select value={filter.sev} onChange={e=>{setFilter(f=>({...f,sev:e.target.value}));setPage(0);}}
+          style={{fontSize:11,height:28,padding:'0 8px'}}>
+          <option value="">All severities</option>
+          {PCAP_SEV_ORDER.map(s=><option key={s} value={s}>{s}</option>)}
+        </select>
+        <input placeholder="Filter IP…" value={filter.ip}
+          onChange={e=>{setFilter(f=>({...f,ip:e.target.value}));setPage(0);}}
+          style={{fontSize:11,height:28,width:130,fontFamily:"'JetBrains Mono',monospace"}}/>
+        <input placeholder="Filter rule…" value={filter.rule}
+          onChange={e=>{setFilter(f=>({...f,rule:e.target.value}));setPage(0);}}
+          style={{fontSize:11,height:28,width:160}}/>
+        <button onClick={()=>{setFilter({sev:'',ip:'',rule:''});setPage(0);}}
+          style={{fontSize:10,color:'var(--text2)',padding:'0 8px',height:28,borderRadius:6,
+            border:'1px solid var(--border-md)',background:'var(--bg4)',cursor:'pointer'}}>Clear</button>
+        <div style={{flex:1}}/>
+        <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:'var(--text2)'}}>
+          {filtered.length.toLocaleString()} alerts
+        </span>
+      </div>
+      <div style={{flex:1,overflowY:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse'}}>
+          <thead>
+            <tr>
+              <TH col="timestamp"    label="Timestamp"/>
+              <TH col="severity"     label="Severity"/>
+              <TH col="rule"         label="Rule"/>
+              <TH col="src_ip"       label="Source IP"/>
+              <TH col="dst_ip"       label="Dest IP"/>
+              <TH col="dst_port"     label="Port"/>
+              <TH col="threat_score" label="Threat"/>
+            </tr>
+          </thead>
+          <tbody>
+            {slice.length ? slice.map((a,i)=>(
+              <tr key={i} style={{transition:'background .1s'}}
+                onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.025)'}
+                onMouseLeave={e=>e.currentTarget.style.background=''}>
+                <td style={{...td,fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text2)'}}>
+                  {(a.timestamp||'').replace('T',' ').substring(0,19)}
+                </td>
+                <td style={td}><PcapSevBadge sev={a.severity}/></td>
+                <td style={{...td,maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',
+                  whiteSpace:'nowrap',fontWeight:500}} title={a.rule}>{a.rule}</td>
+                <td style={{...td,fontFamily:"'JetBrains Mono',monospace",fontSize:11,
+                  color:'var(--cyan)',cursor:'pointer'}} onClick={()=>onInvestigate(a.src_ip)}>
+                  {a.src_ip}
+                </td>
+                <td style={{...td,fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text2)'}}>{a.dst_ip}</td>
+                <td style={{...td,fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text2)'}}>{a.dst_port||'—'}</td>
+                <td style={{...td,fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,
+                  color:(a.threat_score||0)>=80?'var(--red)':(a.threat_score||0)>=50?'var(--orange)':(a.threat_score||0)>=30?'var(--amber)':'var(--text3)'}}>
+                  {a.threat_score||'—'}
+                </td>
+              </tr>
+            )) : (
+              <tr><td colSpan={7} style={{padding:40,textAlign:'center',color:'var(--text3)',fontSize:12}}>
+                No alerts match filters
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+        padding:'10px 16px',borderTop:'1px solid var(--border)',background:'var(--bg2)',flexShrink:0}}>
+        <span style={{fontSize:10,color:'var(--text3)',fontFamily:"'JetBrains Mono',monospace"}}>
+          {pg*PAGE+1}–{Math.min((pg+1)*PAGE,filtered.length)} of {filtered.length}
+        </span>
+        <div style={{display:'flex',gap:4}}>
+          <button disabled={pg===0} onClick={()=>setPage(p=>p-1)}
+            style={{padding:'4px 9px',borderRadius:5,fontSize:11,background:'var(--bg4)',
+              border:'1px solid var(--border-md)',color:'var(--text2)',
+              opacity:pg===0?0.35:1,cursor:pg===0?'default':'pointer'}}>‹ Prev</button>
+          <button disabled={pg>=pages-1} onClick={()=>setPage(p=>p+1)}
+            style={{padding:'4px 9px',borderRadius:5,fontSize:11,background:'var(--bg4)',
+              border:'1px solid var(--border-md)',color:'var(--text2)',
+              opacity:pg>=pages-1?0.35:1,cursor:pg>=pages-1?'default':'pointer'}}>Next ›</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PcapAttackersTab({ topIps, onInvestigate }) {
+  const thS={padding:'8px 12px',textAlign:'left',fontSize:10,fontWeight:600,color:'var(--text2)',
+    letterSpacing:'.08em',textTransform:'uppercase',borderBottom:'1px solid var(--border)',background:'var(--bg2)'};
+  const tdS={padding:'8px 12px',borderBottom:'1px solid var(--border)',fontSize:12,color:'var(--text1)',verticalAlign:'middle'};
+  if(!topIps.length) return <div style={{padding:40,textAlign:'center',color:'var(--text3)',fontSize:12}}>No attacking IPs detected</div>;
+  return (
+    <div style={{overflowY:'auto',height:'100%'}}>
+      <table style={{width:'100%',borderCollapse:'collapse'}}>
+        <thead>
+          <tr>
+            {['#','Source IP','Worst Sev','Score','Alerts','Categories','Rules'].map(h=>(
+              <th key={h} style={thS}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {topIps.map((ip,i)=>{
+            const sc=ip.score;
+            const sc_c=sc>=80?'var(--red)':sc>=50?'var(--orange)':sc>=30?'var(--amber)':'var(--text3)';
+            return (
+              <tr key={ip.ip} onClick={()=>onInvestigate(ip.ip)}
+                style={{cursor:'pointer',transition:'background .1s'}}
+                onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.025)'}
+                onMouseLeave={e=>e.currentTarget.style.background=''}>
+                <td style={{...tdS,fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text3)'}}>{i+1}</td>
+                <td style={{...tdS,fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--cyan)',fontWeight:600}}>{ip.ip}</td>
+                <td style={tdS}><PcapSevBadge sev={ip.worst_sev}/></td>
+                <td style={tdS}>
+                  <div style={{display:'flex',alignItems:'center',gap:7}}>
+                    <div style={{flex:1,height:4,background:'var(--bg5)',borderRadius:2,overflow:'hidden',maxWidth:60}}>
+                      <div style={{height:'100%',borderRadius:2,background:sc_c,width:`${sc}%`}}/>
+                    </div>
+                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,fontWeight:600,
+                      color:sc_c,minWidth:26,textAlign:'right'}}>{sc}</span>
+                  </div>
+                </td>
+                <td style={{...tdS,fontFamily:"'JetBrains Mono',monospace",fontWeight:600}}>{ip.count}</td>
+                <td style={{...tdS,fontSize:11,color:'var(--text2)'}}>{ip.categories.join(', ')}</td>
+                <td style={{...tdS,fontFamily:"'JetBrains Mono',monospace",color:'var(--text3)'}}>{ip.rules.length}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PcapTimelineTab({ data }) {
+  const tl = data.timeline;
+  const canvasRef = useRef(null);
+  const CHART_TOOLTIP = {backgroundColor:'rgba(9,12,22,0.95)',borderColor:'rgba(255,255,255,0.1)',
+    borderWidth:1,titleColor:'#eef2f8',bodyColor:'#8fa3be',padding:10,cornerRadius:8};
+  useChartJs(canvasRef, ()=>!tl.length?null:({
+    type:'bar',
+    data:{
+      labels:tl.map(t=>t.t.replace('T',' ')),
+      datasets:PCAP_SEV_ORDER.filter(s=>tl.some(t=>t[s]>0)).map(s=>({
+        label:s,data:tl.map(t=>t[s]||0),
+        backgroundColor:PCAP_SEV_COLORS[s]+'bb',borderColor:PCAP_SEV_COLORS[s],
+        borderWidth:1,borderRadius:2,stack:'alerts',
+      }))
+    },
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#8fa3be',font:{size:11}},position:'top'},tooltip:CHART_TOOLTIP},
+      scales:{
+        x:{stacked:true,ticks:{color:'#4e6278',maxRotation:45,font:{size:9}},
+          grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+        y:{stacked:true,ticks:{color:'#4e6278',maxTicksLimit:5},
+          grid:{color:'rgba(255,255,255,0.04)'},border:{display:false}},
+      }}
+  }));
+
+  const topBuckets = [...tl]
+    .sort((a,b)=>(b.CRITICAL*4+b.HIGH*2+b.MEDIUM)-(a.CRITICAL*4+a.HIGH*2+a.MEDIUM))
+    .slice(0,5).filter(t=>t.CRITICAL+t.HIGH+t.MEDIUM+t.LOW>0);
+
+  const thS={padding:'8px 12px',textAlign:'left',fontSize:10,fontWeight:600,color:'var(--text2)',
+    letterSpacing:'.08em',textTransform:'uppercase',borderBottom:'1px solid var(--border)',background:'var(--bg2)'};
+  const tdS={padding:'8px 12px',borderBottom:'1px solid var(--border)',fontSize:12,fontFamily:"'JetBrains Mono',monospace"};
+
+  return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:14,overflowY:'auto',height:'100%'}}>
+      <PcapBox title="Alert Timeline — by minute">
+        <div style={{position:'relative',height:260}}>
+          {tl.length?<canvas ref={canvasRef}/>:
+            <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',
+              color:'var(--text3)',fontSize:12}}>No timeline data</div>}
+        </div>
+      </PcapBox>
+      {topBuckets.length>0&&(
+        <PcapBox title="Busiest Minutes">
+          <table style={{width:'100%',borderCollapse:'collapse',marginTop:-6}}>
+            <thead><tr>{['Minute','Critical','High','Medium','Low','Total'].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {topBuckets.map(t=>(
+                <tr key={t.t}>
+                  <td style={{...tdS,color:'var(--text1)'}}>{t.t.replace('T',' ')}</td>
+                  <td style={{...tdS,fontWeight:700,color:'var(--red)'}}>{t.CRITICAL||0}</td>
+                  <td style={{...tdS,fontWeight:700,color:'var(--orange)'}}>{t.HIGH||0}</td>
+                  <td style={{...tdS,color:'var(--amber)'}}>{t.MEDIUM||0}</td>
+                  <td style={{...tdS,color:'var(--blue)'}}>{t.LOW||0}</td>
+                  <td style={{...tdS,fontWeight:700}}>{t.CRITICAL+t.HIGH+t.MEDIUM+t.LOW}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </PcapBox>
+      )}
+    </div>
+  );
+}
+
+function PcapIpPanel({ ip, onClose }) {
+  const [d, setD] = useState(null);
+  useEffect(()=>{
+    setD(null);
+    fetch(`/pcap/api/ip/${encodeURIComponent(ip)}`).then(r=>r.json()).then(setD).catch(()=>{});
+  },[ip]);
+
+  return (
+    <>
+      <div onClick={onClose} style={{position:'fixed',inset:0,zIndex:150,background:'rgba(0,0,0,.5)'}}/>
+      <div style={{position:'fixed',top:0,right:0,bottom:0,width:420,zIndex:200,
+        background:'var(--bg1)',borderLeft:'1px solid var(--border-md)',
+        display:'flex',flexDirection:'column',animation:'nids-slide-in .25s ease'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,padding:'16px 18px',
+          borderBottom:'1px solid var(--border)',flexShrink:0}}>
+          <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:700,
+            color:'var(--text0)',flex:1}}>{ip}</span>
+          <button onClick={onClose} style={{display:'flex',alignItems:'center',justifyContent:'center',
+            width:28,height:28,borderRadius:6,border:'1px solid var(--border-md)',
+            color:'var(--text2)',cursor:'pointer'}}>
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
+              <path d="M1 1l12 12M13 1L1 13"/>
+            </svg>
+          </button>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'16px 18px',display:'flex',flexDirection:'column',gap:14}}>
+          {!d ? <div style={{color:'var(--text2)',fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>Loading…</div> : (
+            <>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                {[{l:'Alerts',v:d.total},{l:'Rules',v:Object.keys(d.by_rule).length},
+                  {l:'Worst',v:<PcapSevBadge sev={Object.keys(d.by_sev).sort((a,b)=>PCAP_SEV_RANK[b]-PCAP_SEV_RANK[a])[0]||'LOW'}/>}
+                ].map(s=>(
+                  <div key={s.l} style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:8,padding:'10px 12px'}}>
+                    <div style={{fontSize:9,color:'var(--text2)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:4}}>{s.l}</div>
+                    <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:16,fontWeight:700,color:'var(--text0)'}}>{s.v}</div>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div style={{fontSize:9,fontWeight:600,color:'var(--text3)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:8}}>Severity Breakdown</div>
+                {PCAP_SEV_ORDER.filter(s=>d.by_sev[s]).map(s=>(
+                  <div key={s} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+                    <PcapSevBadge sev={s}/>
+                    <div style={{flex:1,height:4,background:'var(--bg5)',borderRadius:2,overflow:'hidden'}}>
+                      <div style={{height:'100%',background:PCAP_SEV_COLORS[s],borderRadius:2,
+                        width:`${Math.round((d.by_sev[s]/d.total)*100)}%`}}/>
+                    </div>
+                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:'var(--text2)',
+                      minWidth:26,textAlign:'right'}}>{d.by_sev[s]}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div style={{fontSize:9,fontWeight:600,color:'var(--text3)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:8}}>
+                  Rules Triggered ({Object.keys(d.by_rule).length})
+                </div>
+                {Object.entries(d.by_rule).slice(0,10).map(([rule,count])=>(
+                  <div key={rule} style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+                    padding:'5px 0',borderBottom:'1px solid var(--border)',fontSize:11,gap:8}}>
+                    <span style={{color:'var(--text1)',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{rule}</span>
+                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:'var(--text3)',flexShrink:0}}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function PcapResultsView({ data, onReset }) {
+  const [tab, setTab]       = useState('overview');
+  const [ipPanel, setIpPanel] = useState(null);
+  const { meta } = data;
+
+  const exportCSV = () => {
+    const cols = ['timestamp','severity','rule','src_ip','dst_ip','dst_port','protocol','threat_score'];
+    const rows = [cols.join(','), ...(data.alerts||[]).map(a=>
+      cols.map(c=>`"${String(a[c]??'').replace(/"/g,'""')}"`).join(','))];
+    const blob = new Blob([rows.join('\n')],{type:'text/csv'});
+    const url  = URL.createObjectURL(blob);
+    const el   = document.createElement('a');
+    el.href = url;
+    el.download = (meta.pcap_file||'nids').replace(/\.pcap.*$/,'')+'_alerts.csv';
+    el.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const TABS = [
+    {id:'overview',  label:'Overview'},
+    {id:'alerts',    label:`Alerts (${meta.total_alerts})`},
+    {id:'attackers', label:'Attackers'},
+    {id:'timeline',  label:'Timeline'},
+  ];
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden'}}>
+      <div style={{display:'flex',alignItems:'center',gap:2,padding:'0 16px',height:44,
+        background:'var(--bg2)',borderBottom:'1px solid var(--border)',flexShrink:0}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{
+            padding:'5px 14px',borderRadius:5,fontSize:12,fontWeight:500,cursor:'pointer',
+            color:tab===t.id?'var(--cyan)':'var(--text2)',
+            background:tab===t.id?'rgba(0,212,255,0.08)':'transparent',
+            border:tab===t.id?'1px solid rgba(0,212,255,0.18)':'1px solid transparent',
+            transition:'all .15s'}}>
+            {t.label}
+          </button>
+        ))}
+        <div style={{flex:1}}/>
+        <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:'var(--text3)',marginRight:8}}>
+          {meta.first_ts} → {meta.last_ts}
+        </span>
+        <button onClick={exportCSV} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',
+          borderRadius:6,background:'var(--bg4)',border:'1px solid var(--border-md)',
+          color:'var(--text1)',fontSize:11,fontWeight:500,cursor:'pointer',marginRight:6}}>
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13">
+            <path d="M8 2v8M5 7l3 3 3-3"/><path d="M3 11v2h10v-2"/>
+          </svg>
+          Export CSV
+        </button>
+        <button onClick={onReset} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',
+          borderRadius:6,background:'rgba(0,212,255,0.08)',border:'1px solid rgba(0,212,255,0.2)',
+          color:'var(--cyan)',fontSize:11,fontWeight:500,cursor:'pointer'}}>
+          New Analysis
+        </button>
+      </div>
+      <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        {tab==='overview'  && <PcapOverviewTab  data={data}/>}
+        {tab==='alerts'    && <PcapAlertsTab    alerts={data.alerts||[]} onInvestigate={setIpPanel}/>}
+        {tab==='attackers' && <PcapAttackersTab topIps={data.top_ips||[]} onInvestigate={setIpPanel}/>}
+        {tab==='timeline'  && <PcapTimelineTab  data={data}/>}
+      </div>
+      {ipPanel && <PcapIpPanel ip={ipPanel} onClose={()=>setIpPanel(null)}/>}
+    </div>
+  );
+}
+
+function PcapView() {
+  const [status, setStatus] = useState({status:'idle',pcap_name:'',error:null});
+  const [data,   setData]   = useState(null);
+  const pollRef = useRef(null);
+
+  const stopPoll = () => { clearInterval(pollRef.current); pollRef.current=null; };
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const s = await fetch('/pcap/api/status').then(r=>r.json());
+      setStatus(s);
+      if(s.status==='done') {
+        stopPoll();
+        const d = await fetch('/pcap/api/data').then(r=>r.json());
+        setData(d);
+      } else if(s.status==='error'||s.status==='idle') {
+        stopPoll();
+      } else if(s.status==='running' && !pollRef.current) {
+        pollRef.current = setInterval(checkStatus, 1500);
+      }
+    } catch(e) {}
+  }, []);
+
+  useEffect(()=>{ checkStatus(); return stopPoll; },[]);
+
+  const handleFile = async (file) => {
+    stopPoll();
+    setStatus({status:'running',pcap_name:file.name,error:null});
+    setData(null);
+    const fd = new FormData();
+    fd.append('pcap', file);
+    try {
+      const res    = await fetch('/pcap/upload',{method:'POST',body:fd});
+      const result = await res.json();
+      if(result.status==='done') {
+        const d = await fetch('/pcap/api/data').then(r=>r.json());
+        setData(d);
+        setStatus({status:'done',pcap_name:file.name,error:null});
+      } else {
+        setStatus({status:'error',pcap_name:file.name,error:result.error||'Analysis failed'});
+      }
+    } catch(err) {
+      setStatus({status:'error',pcap_name:file.name,error:err.message||'Network error'});
+    }
+  };
+
+  const handleReset = () => {
+    fetch('/pcap/reset').catch(()=>{});
+    setStatus({status:'idle',pcap_name:'',error:null});
+    setData(null);
+  };
+
+  if(status.status==='idle')                    return <PcapUploadScreen onFile={handleFile}/>;
+  if(status.status==='running')                 return <PcapAnalyzingScreen filename={status.pcap_name}/>;
+  if(status.status==='error')                   return <PcapErrorScreen message={status.error||'Unknown error'} onReset={handleReset}/>;
+  if(status.status==='done' && data)            return <PcapResultsView data={data} onReset={handleReset}/>;
+  return null;
+}
+
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App() {
   const [alerts,setAlerts]               = useState(()=>nidsGenHistory());
@@ -789,7 +1601,10 @@ function App() {
   const [investigateIP,setInvestigateIP] = useState(null);
   const [apiMode,setApiMode]             = useState(false);
   const [health,setHealth]               = useState(null);
+  const [captureStatus,setCaptureStatus] = useState(null);
   const [theme,setTheme]                 = useState(()=>localStorage.getItem("nids-theme")||"dark");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(()=>localStorage.getItem("nids-col")==="1");
+  const toggleSidebar = useCallback(()=>setSidebarCollapsed(c=>{ const n=!c; localStorage.setItem("nids-col",n?"1":"0"); return n; }),[]);
   const startRef   = useRef(Date.now());
   const ruleSearch = useRef(null);
 
@@ -824,6 +1639,33 @@ function App() {
       }
     });
     refreshAllowlist();
+  },[]);
+
+  // Poll capture engine status every 5 s
+  useEffect(()=>{
+    const poll = async () => {
+      const s = await nidsFetchCaptureStatus();
+      if (s) setCaptureStatus(s);
+    };
+    poll();
+    const iv = setInterval(poll, 5000);
+    return () => clearInterval(iv);
+  },[]);
+
+  const handleCaptureStart = useCallback(async (iface) => {
+    const res = await nidsStartCapture(iface);
+    if (!res.error) {
+      setCaptureStatus(s => ({...(s||{}), running:true, pid:res.pid, interface:iface, external:false, uptime_s:0}));
+    }
+    return res;
+  },[]);
+
+  const handleCaptureStop = useCallback(async () => {
+    const res = await nidsStopCapture();
+    if (!res.error) {
+      setCaptureStatus(s => ({...(s||{}), running:false, pid:null, uptime_s:0}));
+    }
+    return res;
   },[]);
 
   // Block / unblock
@@ -904,6 +1746,7 @@ function App() {
         case "4": setNav("rules");     break;
         case "5": setNav("analytics"); break;
         case "6": setNav("allowlist"); break;
+        case "7": setNav("pcap");      break;
       }
     };
     window.addEventListener("keydown",h);
@@ -912,16 +1755,16 @@ function App() {
 
   const critCount=alerts.filter(a=>a.severity==="CRITICAL"&&Date.now()-new Date(a.timestamp)<3600000).length;
   const dropRate=(queuePct*0.017).toFixed(1);
-  const viewProps={alerts,paused,setPaused,filter,setFilter,newIds,tweaks,blockedIPs,onBlock:handleBlock,onInvestigate:handleInvestigate,ruleSearchRef:ruleSearch,pktRate};
+  const viewProps={alerts,paused,setPaused,filter,setFilter,newIds,tweaks,blockedIPs,onBlock:handleBlock,onInvestigate:handleInvestigate,ruleSearchRef:ruleSearch,pktRate,apiMode};
 
   const openTweaks=()=>window.postMessage({type:"__activate_edit_mode"},"*");
 
   return (
     <div style={{display:"flex",height:"100vh",width:"100vw",overflow:"hidden"}}>
-      <Sidebar active={nav} setActive={setNav} critCount={critCount} blockedCount={blockedIPs.size} allowlistCount={allowlistEntries.length} health={health} apiMode={apiMode}/>
+      <Sidebar active={nav} setActive={setNav} critCount={critCount} blockedCount={blockedIPs.size} allowlistCount={allowlistEntries.length} health={health} apiMode={apiMode} captureStatus={captureStatus} onCaptureStart={handleCaptureStart} onCaptureStop={handleCaptureStop} collapsed={sidebarCollapsed} onToggle={toggleSidebar}/>
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
         <Header active={nav} paused={paused} onExport={()=>nidsExportCSV(alerts)} onShortcuts={()=>setShowShortcuts(x=>!x)} onTweaks={openTweaks} onTheme={toggleTheme} theme={theme} apiMode={apiMode}/>
-        <StatusBar queuePct={queuePct} dropRate={dropRate} uptime={uptime} pktRate={pktRate} health={health} apiMode={apiMode}/>
+        <StatusBar queuePct={queuePct} dropRate={dropRate} uptime={uptime} pktRate={pktRate} health={health} apiMode={apiMode} captureStatus={captureStatus}/>
         <div style={{flex:1,overflow:"hidden",background:"var(--bg2)"}}>
           {nav==="dashboard" && <DashboardView {...viewProps}/>}
           {nav==="alerts"    && <AlertsView    {...viewProps}/>}
@@ -929,6 +1772,7 @@ function App() {
           {nav==="rules"     && <RulesView     alerts={alerts}/>}
           {nav==="analytics" && <AnalyticsView alerts={alerts}/>}
           {nav==="allowlist" && <AllowlistView entries={allowlistEntries} onRefresh={refreshAllowlist} apiMode={apiMode}/>}
+          {nav==="pcap"      && <PcapView/>}
         </div>
       </div>
 

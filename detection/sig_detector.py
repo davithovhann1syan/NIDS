@@ -19,6 +19,7 @@ class Alert(TypedDict):
     dst_port: int | None
     protocol: str           # "TCP", "UDP", "ICMP", or numeric string for other IP protocols
     count:    NotRequired[int]
+    id:       NotRequired[str]
 
 
 class SignatureDetector:
@@ -160,7 +161,7 @@ class SignatureDetector:
 
     @staticmethod
     def _build_alert(rule: Rule, features: FeatureDict) -> Alert:
-        return Alert(
+        alert = Alert(
             rule=rule["name"],
             severity=rule["severity"],
             src_ip=features["src_ip"],
@@ -168,6 +169,9 @@ class SignatureDetector:
             dst_port=features["dst_port"],
             protocol=_PROTO_NAME.get(features["protocol"], str(features["protocol"])),
         )
+        if "id" in rule:
+            alert["id"] = rule["id"]  # type: ignore[typeddict-item]
+        return alert
 
     def _check_rate(self, rule: Rule, features: FeatureDict) -> Alert | None:
         """Evaluate a rate rule against the current feature dict.
@@ -206,7 +210,7 @@ class SignatureDetector:
             return None
 
         if len(bucket) >= rule["threshold"]:
-            return Alert(
+            alert = Alert(
                 rule=rule["name"],
                 severity=rule["severity"],
                 src_ip=src_ip,
@@ -215,6 +219,9 @@ class SignatureDetector:
                 protocol=_PROTO_NAME.get(features["protocol"], str(features["protocol"])),
                 count=len(bucket),
             )
+            if "id" in rule:
+                alert["id"] = rule["id"]  # type: ignore[typeddict-item]
+            return alert
 
         return None
 
@@ -255,7 +262,7 @@ class SignatureDetector:
 
         unique_count = len({v for _, v in bucket})
         if unique_count >= rule["threshold"]:  # type: ignore[typeddict-item]
-            return Alert(
+            alert = Alert(
                 rule=rule["name"],
                 severity=rule["severity"],
                 src_ip=src_ip,
@@ -264,5 +271,8 @@ class SignatureDetector:
                 protocol=_PROTO_NAME.get(features["protocol"], str(features["protocol"])),
                 count=unique_count,
             )
+            if "id" in rule:
+                alert["id"] = rule["id"]  # type: ignore[typeddict-item]
+            return alert
 
         return None

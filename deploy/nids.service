@@ -1,0 +1,35 @@
+# systemd service unit for NIDS (capture engine)
+#
+# Install:
+#   sudo cp deploy/nids.service /etc/systemd/system/nids.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nids
+#
+# Monitor:
+#   journalctl -u nids -f
+#
+# Update after editing this file:
+#   sudo systemctl daemon-reload && sudo systemctl restart nids
+
+[Unit]
+Description=NIDS — Network Intrusion Detection System
+After=network.target
+Documentation=https://github.com/your-repo/nids
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/nids
+EnvironmentFile=/opt/nids/.env
+ExecStart=/opt/nids/.venv/bin/python main.py --interface eth0
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Send SIGHUP to reopen the log file after logrotate rotates it.
+# logrotate's postrotate calls: systemctl kill -s HUP nids
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target

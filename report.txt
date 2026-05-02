@@ -2,7 +2,7 @@
   NIDS — Network Intrusion Detection System
   Project Report
   Author:       Davit Hovhannisyan
-  Last updated: 2026-04-26
+  Last updated: 2026-05-02
 ================================================================================
 
 
@@ -19,7 +19,7 @@ investigation.
 
 The system is purely signature-based — no machine learning or statistical
 anomaly detection. Detection quality is determined entirely by the quality and
-coverage of the signature rules. The current ruleset contains 83 rules spanning
+coverage of the signature rules. The current ruleset contains 74 rules spanning
 11 threat categories.
 
 Target environment: home or small office network running Linux.
@@ -49,7 +49,7 @@ dashboard.
         │  ttl, src_port, dst_port, flags, flags_int, icmp_type
         ▼
   detection/sig_detector.py   Thread 2
-        │  Evaluates all 83 rules: pattern, rate, multi_destination
+        │  Evaluates all 74 rules: pattern, rate, multi_destination
         │  Returns list[Alert] — may be empty or multiple
         ▼
   detection/correlator.py     Thread 2
@@ -96,7 +96,17 @@ Scapy ≥ 2.5    Packet capture and parsing.
                 layers. Requires root privileges for live capture.
 
 Flask ≥ 3.0    Web microframework for the dashboard REST API and HTML delivery.
-                dashboard/app.py — serves six API endpoints + index.html.
+                Two apps: dashboard/app.py (live, port 5000) and
+                dashboard/pcap_app.py (offline PCAP analysis, port 5001).
+
+React 18        Client-side UI framework for the live dashboard (index.html).
+                Loaded from CDN; transpiled in-browser via Babel Standalone.
+                All component state is local — no server-side session needed.
+
+Chart.js 4.4    Data visualisation library (CDN).
+                Used for the timeline line chart, severity doughnut, horizontal
+                bar charts (top IPs, top rules, top ports), and stacked timeline
+                in the PCAP analysis view.
 
 python-dotenv   Loads .env into os.environ before config.py is imported.
                 Allows credentials to be stored outside source control.
@@ -261,158 +271,254 @@ typing          Standard library — TypedDict, Literal, NotRequired.
   4.8  WEB DASHBOARD
   ─────────────────────────────────────────────────────────────────────────────
   Architecture:
-  - Flask application running as a completely separate process.
-  - Reads nids.log directly — no imports from the detection layer.
-  - Tail-first log reading: seeks from the end of the file, so large logs
-    do not cause memory spikes.
+  - Two independent Flask applications, both reading detection outputs
+    directly from disk — neither imports anything from the detection layer.
+  - dashboard/app.py    Live dashboard on port 5000. Reads nids.log with
+                        tail-first seeking so large logs do not spike memory.
+  - dashboard/pcap_app.py  Offline PCAP dashboard on port 5001. Accepts
+                        .pcap/.pcapng/.cap uploads (up to 500 MB), runs the
+                        full detection pipeline offline, and returns aggregated
+                        results. Also embeds as a tab inside the live dashboard.
+  - detection/categories.py  Single source of truth for the RULE_CATEGORY
+                        dict and SEV_ORDER list; imported by both Flask apps
+                        and by scripts/replay_pcap.py. No duplication.
 
-  REST API endpoints:
-    GET /                — serves the dashboard UI (index.html)
-    GET /api/alerts      — last N alerts, newest first
-                           query params: ?limit, ?severity, ?ip, ?rule, ?since
-    GET /api/stats       — aggregate counts: total, today, by_severity,
-                           top 10 source IPs, top 10 triggered rules
-    GET /api/health      — active interface, log file size, rules_active count
-    GET /api/rules       — full rule list with name, severity, type,
-                           category, and MITRE ATT&CK ID
-    GET /api/ip/<ip>     — per-IP investigation: risk score (0–100),
-                           first/last seen timestamps, alert breakdown by
-                           severity and rule, 20 most recent events
+  Live dashboard REST API (dashboard/app.py):
+    GET  /                     — serves the dashboard UI (index.html)
+    GET  /api/alerts           — last N alerts, newest first
+                                 params: ?limit, ?severity, ?ip, ?rule, ?since
+    GET  /api/stats            — aggregates: total, today, by_severity,
+                                 top 10 source IPs, top 10 triggered rules
+    GET  /api/health           — interface, log size, rules_active count
+    GET  /api/rules            — full rule list: name, severity, type,
+                                 category, MITRE ATT&CK ID
+    GET  /api/ip/<ip>          — per-IP risk score, first/last seen,
+                                 breakdown by severity and rule, recent events
+    GET  /api/capture_status   — running state, PID, uptime, interface
+    POST /api/capture_start    — spawn main.py as subprocess
+    POST /api/capture_stop     — SIGTERM the running capture subprocess
+    GET  /api/allowlist        — list allowlisted IPs and subnets
+    POST /api/allowlist/add    — add an IP or CIDR subnet
+    POST /api/allowlist/remove — remove an entry
+    POST /pcap/upload          — upload a .pcap file for offline analysis
+    GET  /pcap/api/status      — job status: idle / running / done / error
+    GET  /pcap/api/data        — full analysis results (alerts, aggregates,
+                                 timeline, top IPs)
+    GET  /pcap/api/ip/<ip>     — per-IP investigation within the PCAP
+    POST /pcap/reset           — clear the current PCAP result
 
-  Risk score formula (per IP, from /api/ip):
+  Risk score formula (per IP):
     score = min(100,  CRITICAL_count × 20 + HIGH_count × 8
                     + min(total_alerts × 2, 40))
 
-  Frontend (dashboard/templates/index.html + dashboard/static/):
-  - Live alert table, color-coded by severity:
-      CRITICAL = red, HIGH = orange, MEDIUM = yellow, LOW = blue
-  - Auto-refresh every 5 seconds; Pause button for analyst review
-  - Filter bar: by severity, rule name, source IP
-  - Stats bar: total alerts today, CRITICAL/HIGH counts, top attacking IP
-  - Charts (Chart.js via CDN):
-      Alerts over time (line chart, last 24h, hourly buckets)
-      Alerts by severity (doughnut chart)
-      Top 10 source IPs (horizontal bar chart)
-      Top 10 triggered rules (horizontal bar chart)
-  - Tweaks panel: runtime display settings without page reload
-  - Rule browser: full list of active signatures with category and MITRE ID
+  Live dashboard frontend (index.html + static/):
+  Built with React 18 (CDN + in-browser Babel). Seven views accessible via a
+  collapsible sidebar (state persisted in localStorage) or keyboard shortcuts:
+
+    1  Dashboard      Stat cards (total, crit, high, top attacker, packet rate)
+                      Threat posture banner (NORMAL / ELEVATED / HIGH / CRITICAL)
+                      Alerts-over-time line chart (24h, hourly buckets)
+                      Severity doughnut + alert table + top attackers sidebar
+                      Demo Mode banner shown when no live backend is detected
+
+    2  Alert Feed     Full filterable table: severity, category, source IP, rule
+                      Expandable rows with all alert fields + MITRE ID
+                      Pause/resume live feed; CSV export of filtered view
+                      Per-row: Investigate, Block IP, Copy IP actions
+
+    3  Attack Map     SVG world map — dots sized by volume, colored by severity
+                      Hover tooltip shows IP, country, alert count
+                      Click any dot to open the investigation drawer
+
+    4  Rules          All 74 signatures grouped by category
+                      Hit counter and severity badge per rule
+                      MITRE ATT&CK ID badges; rule type indicator
+
+    5  Analytics      Category breakdown cards with percentage bars
+                      Top source IPs / target ports / rules (bar charts)
+                      MITRE technique frequency heatmap
+
+    6  Allowlist       Add/remove trusted IPs and CIDR subnets
+                      Changes reflected in the detection engine within ~2 min
+
+    7  PCAP Analysis  Drag-and-drop .pcap upload; runs all 74 signatures
+                      Overview / Alerts / Attackers / Timeline tabs
+                      Per-IP investigation panel; CSV export
+
+  Additional UI features:
+  - IP investigation drawer — risk score, first/last seen, top rules,
+    MITRE techniques, recent events; accessible from any IP address
+  - Toast notifications — pop-up for CRITICAL/HIGH events (configurable)
+  - Keyboard shortcuts — P=pause, E=export, C=clear, T=theme, /=search, ?=help
+  - Dark / light theme toggle (persisted in localStorage)
+  - Tweaks panel — refresh interval, max table rows, compact mode, toast filter
+  - Capture engine control — start/stop main.py directly from the sidebar
+    without touching the terminal
 
   To run:
-    python -m dashboard.app         (separate terminal, no root required)
-    open http://localhost:5000
+    python -m dashboard.app          (live dashboard — port 5000, no root)
+    python -m dashboard.pcap_app     (standalone PCAP — port 5001, no root)
 
 
 ────────────────────────────────────────────────────────────────────────────────
   5. SIGNATURE RULE COVERAGE
 ────────────────────────────────────────────────────────────────────────────────
 
-  Total rules: 83   |   Rule types: pattern, rate, multi_destination
-  Severity levels:  LOW, MEDIUM, HIGH, CRITICAL
+  Total rules: 74   |   Rule IDs: R001–R074
+  Rule types:  pattern, rate, multi_destination
+  Severities:  LOW, MEDIUM, HIGH, CRITICAL
 
-  RECONNAISSANCE (15 rules)
-    Port Scan (SYN)                        rate, HIGH,     T1046
-    Port Scan (Distinct Ports)             multi_dest, HIGH, T1046
-    Host Discovery Sweep (Distinct IPs)    multi_dest, HIGH, T1018
-    Null Scan                              pattern, HIGH,  T1046
-    XMAS Scan                              pattern, HIGH,  T1046
-    FIN Scan                               pattern, HIGH,  T1046
-    Maimon Scan                            pattern, MEDIUM, T1046
-    ACK Scan                               pattern, MEDIUM, T1046
-    ICMP Host Sweep (Ping Sweep)           rate, MEDIUM,   T1018
-    UDP Port Scan                          rate, HIGH,     T1046
-    Invalid TCP Flags: SYN+RST             pattern, HIGH
-    Invalid TCP Flags: SYN+FIN             pattern, HIGH
-    Oversized ICMP Packet                  pattern, MEDIUM
-    Low TTL Probe (Traceroute / Evasion)   pattern, LOW
-    TCP SYN with Large Payload             pattern, MEDIUM
+  Rules are deliberately conservative — thresholds and rule types were
+  tuned to minimise false positives on real home/office network traffic.
+  See the Detection Refactor notes below (section 5.1) for details.
 
-  BRUTE FORCE (12 rules)
-    SSH Brute Force                        rate, HIGH,     T1110
-    RDP Brute Force                        rate, HIGH,     T1110
-    FTP Brute Force                        rate, MEDIUM,   T1110
-    Telnet Brute Force                     rate, MEDIUM,   T1110
-    SMTP Auth Brute Force                  rate, MEDIUM,   T1110
-    IMAP Brute Force                       rate, MEDIUM,   T1110
-    POP3 Brute Force                       rate, MEDIUM,   T1110
-    VNC Brute Force                        rate, HIGH,     T1110
-    MySQL Brute Force                      rate, HIGH,     T1110
-    PostgreSQL Brute Force                 rate, HIGH,     T1110
-    MSSQL Brute Force                      rate, HIGH,     T1110
-    Kerberos Brute Force (AS-REP/Spray)    rate, HIGH,     T1558
+  RECONNAISSANCE (16 rules — R001–R016)
+    R001  Port Scan (SYN)                        rate, HIGH,     T1046  100 SYN/10s
+    R002  Port Scan (Distinct Ports)             multi_dest, HIGH, T1046  25 unique ports/30s
+    R003  Host Discovery Sweep (Distinct IPs)    multi_dest, HIGH, T1018  20 unique IPs/30s
+    R004  Null Scan                              pattern, HIGH,  T1046
+    R005  XMAS Scan                              pattern, HIGH,  T1046
+    R006  FIN Scan                               pattern, MEDIUM, T1046
+    R007  Maimon Scan                            multi_dest, MEDIUM, T1046  20 unique FA ports/30s
+    R008  ACK Scan                               multi_dest, MEDIUM, T1046  30 unique ACK ports/30s
+    R009  ICMP Host Sweep (Ping Sweep)           rate, MEDIUM,   T1018  20 pings/10s
+    R010  UDP Port Scan                          rate, MEDIUM,   T1046  500 UDP/10s
+    R011  Invalid TCP Flags: SYN+RST             pattern, MEDIUM, T1046
+    R012  Invalid TCP Flags: SYN+FIN             pattern, MEDIUM, T1046
+    R013  Oversized ICMP Packet (>1 000 B)       pattern, MEDIUM, T1498.001
+    R014  Low TTL Probe (≤4, Traceroute/Evasion) pattern, LOW,   T1040
+    R015  ICMP Redirect (Routing Manipulation)   pattern, HIGH,  T1565
+    R016  TCP SYN with Large Payload (>80 B)     pattern, MEDIUM, T1499.002
 
-  DENIAL OF SERVICE (8 rules)
-    SYN Flood                              rate, CRITICAL, T1498
-    ICMP Flood                             rate, HIGH,     T1498
-    UDP Flood                              rate, HIGH,     T1498
-    RST Flood                              rate, MEDIUM,   T1498
-    ACK Flood                              rate, MEDIUM,   T1498
-    DNS Amplification Attack               pattern, HIGH,  T1498
-    NTP Amplification Attack               pattern, HIGH,  T1498
-    Memcached Exposed (DDoS Amplification) pattern, HIGH
+  BRUTE FORCE (12 rules — R017–R028)
+    R017  SSH Brute Force                        rate, CRITICAL, T1110.001  10 SYN/60s
+    R018  RDP Brute Force                        rate, CRITICAL, T1110.001  10 SYN/60s
+    R019  FTP Brute Force                        rate, HIGH,     T1110.001  10 SYN/60s
+    R020  Telnet Brute Force                     rate, HIGH,     T1110.001  5 SYN/30s
+    R021  SMTP Auth Brute Force                  rate, HIGH,     T1110.003  10 SYN/60s
+    R022  IMAP Brute Force                       rate, HIGH,     T1110.001  10 SYN/60s
+    R023  POP3 Brute Force                       rate, HIGH,     T1110.001  10 SYN/60s
+    R024  VNC Brute Force                        rate, CRITICAL, T1110.001  10 SYN/60s
+    R025  MySQL Brute Force                      rate, CRITICAL, T1110.001  5 SYN/30s
+    R026  PostgreSQL Brute Force                 rate, CRITICAL, T1110.001  5 SYN/30s
+    R027  MSSQL Brute Force                      rate, CRITICAL, T1110.001  5 SYN/30s
+    R028  Kerberos Brute Force (AS-REP/Spray)    rate, CRITICAL, T1558.003  20/30s
 
-  SUSPICIOUS SERVICES (8 rules)
-    Telnet Attempt                         pattern, MEDIUM, T1021
-    FTP Cleartext Login                    pattern, LOW,   T1021
-    rlogin / rsh Attempt                   pattern, HIGH,  T1021
-    TFTP Access                            pattern, LOW
-    SNMP Access (v1/v2)                    pattern, LOW,   T1046
-    NFS Access                             pattern, LOW,   T1039
-    LLMNR Traffic (Possible MITM)          pattern, MEDIUM, T1557
-    SSDP / UPnP Discovery                  pattern, LOW
+  DENIAL OF SERVICE (5 rules — R029–R033)
+    R029  SYN Flood                              rate, CRITICAL, T1498.001  200 SYN/5s
+    R030  ICMP Flood                             rate, HIGH,     T1498.001  100 pings/10s
+    R031  UDP Flood                              rate, HIGH,     T1498.001  1000 UDP/10s
+    R032  RST Flood                              rate, HIGH,     T1499      100 RST/10s
+    R033  ACK Flood                              rate, HIGH,     T1498.001  500 ACK/10s
 
-  MALWARE & C2 (8 rules)
-    Known C2 / Backdoor Port               pattern, CRITICAL, T1571
-    Possible Reverse Shell (High Port)     pattern, HIGH,  T1571
-    IRC Traffic (Possible Botnet C2)       pattern, HIGH,  T1071
-    Tor Default Port                       pattern, MEDIUM, T1090
-    DNS over Non-Standard Port (Tunneling) pattern, HIGH,  T1071
-    Cobalt Strike Default Beacon Port      pattern, CRITICAL, T1071
-    Netcat / Bind Shell Default Port       pattern, HIGH,  T1059
-    Aggressive Outbound SYN Rate           rate, HIGH,     T1071
+  SUSPICIOUS SERVICES (4 rules — R034–R037)
+    R034  Telnet Attempt                         pattern, MEDIUM, T1078     (SYN-only)
+    R035  rlogin / rsh Attempt                   pattern, HIGH,  T1021
+    R036  TFTP Access                            pattern, MEDIUM, T1105
+    R037  LLMNR Traffic (Possible MITM)          pattern, LOW,   T1557.001
 
-  LATERAL MOVEMENT (6 rules)
-    SMB Access (Possible Lateral Movement) pattern, MEDIUM, T1021
-    SMB Sweep (Ransomware Propagation)     multi_dest, CRITICAL, T1021
-    WinRM Access (Possible Lateral Move)   pattern, HIGH,  T1021
-    DCOM / RPC Access                      pattern, MEDIUM, T1021
-    NetBIOS Name / Datagram Service        pattern, LOW,   T1046
-    LDAP Enumeration                       rate, MEDIUM,   T1087
+  MALWARE & C2 (8 rules — R038–R045)
+    R038  Known C2 / Backdoor Port               pattern, CRITICAL, T1571
+    R039  Possible Reverse Shell (High Port)     multi_dest, HIGH, T1059   5 unique ports>60000/60s
+    R040  IRC Traffic (Possible Botnet C2)       pattern, MEDIUM, T1571
+    R041  Tor Default Port                       pattern, MEDIUM, T1090.003
+    R042  DNS over Non-Standard Port             pattern, MEDIUM, T1071.004
+    R043  Cobalt Strike Default Beacon Port      pattern, CRITICAL, T1105
+    R044  Netcat / Bind Shell Default Port       pattern, HIGH,  T1059
+    R045  Aggressive Outbound SYN Rate (Worm)    rate, MEDIUM,   T1595     300 SYN/60s
 
-  EXPOSED SERVICES (9 rules)
-    Log4Shell Target Port (8080/8443)      pattern, HIGH,  T1190
-    Redis Exposed (No Auth)                pattern, HIGH,  T1190
-    Elasticsearch Exposed                  pattern, HIGH,  T1190
-    MongoDB Exposed                        pattern, HIGH,  T1190
-    Docker API Exposed                     pattern, CRITICAL, T1610
-    Kubernetes API Exposed                 pattern, CRITICAL, T1610
-    etcd Exposed                           pattern, CRITICAL, T1190
-    CouchDB Exposed                        pattern, HIGH,  T1190
-    Hadoop / HDFS Exposed                  pattern, HIGH,  T1190
+  LATERAL MOVEMENT (2 rules — R046–R047)
+    R046  SMB Sweep (Ransomware Propagation)     rate, CRITICAL, T1570     10 SYN/10s
+    R047  WinRM Access (Possible Lateral Move)   pattern, MEDIUM, T1021.006
 
-  EXFILTRATION (4 rules)
-    DNS Query Flood UDP (DNS Tunneling)    rate, HIGH,     T1048
-    DNS Query Flood TCP (DNS Tunneling)    rate, HIGH,     T1048
-    ICMP Exfiltration (Large Volume)       rate, HIGH,     T1048
-    FTP Data Channel (Possible Exfil)      pattern, MEDIUM, T1048
+  EXPOSED SERVICES (9 rules — R048–R056)
+    R048  Redis Exposed (No Auth)                rate, CRITICAL, T1190     3 SYN/60s
+    R049  Elasticsearch Exposed                  rate, CRITICAL, T1190     3 SYN/60s
+    R050  MongoDB Exposed                        rate, CRITICAL, T1190     3 SYN/60s
+    R051  Docker API Exposed                     rate, CRITICAL, T1610     3 SYN/60s
+    R052  Kubernetes API Exposed                 rate, CRITICAL, T1610     3 SYN/60s
+    R053  etcd Exposed                           rate, CRITICAL, T1552.007 3 SYN/60s
+    R054  Memcached Exposed (DDoS Amplification) rate, HIGH,     T1498.002 3 UDP/60s
+    R055  CouchDB Exposed                        rate, HIGH,     T1190     3 SYN/60s
+    R056  Hadoop / HDFS Exposed                  rate, HIGH,     T1190     3 SYN/60s
 
-  INFRASTRUCTURE ATTACKS (6 rules)
-    BGP Connection Attempt                 pattern, HIGH,  T1557
-    OSPF Injection                         pattern, HIGH,  T1557
-    EIGRP Traffic                          pattern, MEDIUM
-    GRE Tunnel Traffic                     pattern, MEDIUM, T1572
-    IPv6-in-IPv4 Tunnel                    pattern, MEDIUM, T1572
-    ICMP Redirect (Routing Manipulation)   pattern, HIGH,  T1557
+  EXFILTRATION (4 rules — R057–R060)
+    R057  DNS Query Flood UDP (DNS Tunneling)    rate, HIGH,     T1048.001  200 UDP/60s
+    R058  DNS Query Flood TCP (DNS Tunneling)    rate, MEDIUM,   T1048.001  100 TCP/60s
+    R059  ICMP Exfiltration (Large Volume)       rate, MEDIUM,   T1048.003  50 pings/60s
+    R060  FTP Data Channel (Possible Exfil)      pattern, LOW,   T1048
 
-  ICS / SCADA (4 rules)
-    Modbus Access (ICS Protocol)           pattern, HIGH,  T1046
-    DNP3 Access (ICS Protocol)             pattern, HIGH,  T1046
-    EtherNet/IP Access (ICS Protocol)      pattern, HIGH,  T1046
-    BACnet Access (Building Automation)    pattern, MEDIUM, T1046
+  NETWORK INFRASTRUCTURE ATTACKS (7 rules — R061–R067)
+    R061  DNS Amplification Attack               rate, CRITICAL, T1498.002  500 src:53 UDP/10s
+    R062  NTP Amplification Attack               rate, CRITICAL, T1498.002  200 src:123 UDP/10s
+    R063  BGP Connection Attempt                 pattern, HIGH,  T1557
+    R064  OSPF Injection                         pattern, HIGH,  T1565
+    R065  EIGRP Traffic                          pattern, HIGH,  T1565
+    R066  GRE Tunnel Traffic                     pattern, MEDIUM, T1572
+    R067  IPv6-in-IPv4 Tunnel                    pattern, MEDIUM, T1572
 
-  POLICY VIOLATIONS (3 rules)
-    Proxy / Anonymizer Port                pattern, LOW,   T1090
-    P2P / BitTorrent Port                  pattern, LOW
-    Cryptocurrency Mining Pool             pattern, MEDIUM, T1496
+  ICS / SCADA (4 rules — R068–R071)
+    R068  Modbus Access (ICS Protocol)           pattern, HIGH,  T0855
+    R069  DNP3 Access (ICS Protocol)             pattern, HIGH,  T0855
+    R070  EtherNet/IP Access (ICS Protocol)      pattern, HIGH,  T0855
+    R071  BACnet Access (Building Automation)    pattern, MEDIUM, T0855
+
+  POLICY VIOLATIONS (3 rules — R072–R074)
+    R072  Proxy / Anonymizer Port                pattern, LOW,   T1090
+    R073  P2P / BitTorrent Port                  pattern, LOW,   T1048
+    R074  Cryptocurrency Mining Pool             pattern, HIGH,  T1496
+
+  ─────────────────────────────────────────────────────────────────────────────
+  5.1  DETECTION REFACTOR — FALSE POSITIVE REDUCTION
+  ─────────────────────────────────────────────────────────────────────────────
+
+  The original ruleset had 83 rules. Nine were removed and several were
+  converted to less noisy rule types to fix three real problems observed
+  during testing:
+
+  Problem 1 — Own IP appearing as "top attacker"
+    Cause:  Outbound packets from the sensor machine have src_ip = local IP.
+            Rate rules accumulated hits → threat_score escalated → local IP
+            flagged CRITICAL.
+    Fix:    main.py now auto-detects the interface IP via get_if_addr() and
+            skips any packet whose src_ip is in {local_ip, 127.0.0.1, ::1}.
+
+  Problem 2 — Kubernetes/random alerts during nmap scans
+    Cause:  All 9 Exposed Services rules were "pattern" type — one SYN to
+            port 6443 fired "Kubernetes API Exposed". nmap probes each port
+            once → 9 distinct rules → correlator escalated to CRITICAL.
+    Fix:    All Exposed Services rules (R048–R056) converted from pattern →
+            rate with threshold=3/60s. nmap sends exactly 1 SYN per port and
+            never reaches 3, so no alert fires.
+
+  Problem 3 — False positives and inconsistent alerts
+    Nine noisy pattern rules removed:
+      SMB Access       — every Windows share mount triggered it
+      DCOM/RPC         — fires on every Windows background event
+      NetBIOS          — fires on every Windows name query
+      LDAP Enumeration — constant in Active Directory environments
+      SNMP Access      — every monitoring tool poll
+      NFS Access       — every NAS mount
+      SSDP/UPnP        — constant on home/office LANs
+      FTP Cleartext    — every FTP packet; R019 covers brute-force attacks
+      Log4Shell Target — port 8080/8443 too common; port-based detection
+                         is useless for Log4Shell
+
+    Three rules converted pattern/rate → multi_destination:
+      R007 Maimon Scan  (FA to 20 unique dst_ports/30s — was: 20 FA pkts)
+      R008 ACK Scan     (A to 30 unique dst_ports/30s  — was: 30 ACK pkts)
+      R039 Reverse Shell (SYN to 5 unique ports>60000/60s — was: single SYN)
+    Key insight: scanners probe many different ports; legitimate connections
+    reuse the same small port set. Unique-count tracking eliminates the
+    false positive entirely.
+
+    Other threshold/condition fixes:
+      Port Scan (SYN): raised 30/5s → 100/10s (browser opening 30 tabs
+                        was triggering the old threshold)
+      Telnet Attempt:  added flags="S" (SYN only) to suppress established
+                        session packet noise
+      C2 port list:    removed 8888 (common Jupyter port) and 9000 (used by
+                        Portainer, SonarQube, PHP-FPM)
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -438,41 +544,57 @@ typing          Standard library — TypedDict, Literal, NotRequired.
     # Smoke test (verify sniffer + extractor on real traffic)
     sudo .venv/bin/python scripts/test_capture.py
 
-    # Traffic generator (root required) — triggers NIDS signatures
-    sudo python scripts/gen_traffic.py --list
+    # Traffic generator (root required) — 52 attacks, 10 scenarios
+    sudo python scripts/gen_traffic.py --list                                # all attacks
+    sudo python scripts/gen_traffic.py --scenarios                           # all scenarios
     sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_scan
     sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack brute_force --port 22
-    sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_flood --count 250
-    sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack c2_beacon --port 4444
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --scenario apt_campaign
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --scenario full_demo
+    sudo python scripts/gen_traffic.py --target 192.168.1.5 --interactive   # menu mode
 
     # Analyze a saved .pcap file offline (no root needed)
     python scripts/replay_pcap.py --file capture.pcap
     python scripts/replay_pcap.py --file capture.pcap --output alerts.json --quiet
 
     # Dashboard (separate terminal, no root needed)
-    python -m dashboard.app
-    # open http://localhost:5000
+    python -m dashboard.app            # live dashboard — http://localhost:5000
+    python -m dashboard.pcap_app       # standalone PCAP — http://localhost:5001
 
   Completed components:
     [x] config.py
+    [x] allowlist.py / allowlist.json  — IP/CIDR suppress list, hot-reload every 2 min
     [x] capture/sniffer.py
     [x] capture/queue_manager.py
     [x] parser/extractor.py
-    [x] detection/signatures.py       — 83 rules
-    [x] detection/sig_detector.py     — pattern + rate + multi_destination engine
-    [x] detection/correlator.py       — per-packet and cross-packet correlation
+    [x] detection/signatures.py        — 74 rules (R001–R074), false-positive refactored
+    [x] detection/sig_detector.py      — pattern + rate + multi_destination + rule IDs
+    [x] detection/correlator.py        — per-packet and cross-packet correlation
+    [x] detection/categories.py        — single source of truth for RULE_CATEGORY + SEV_ORDER
     [x] alerting/deduplicator.py
     [x] alerting/logger.py
-    [x] alerting/notifier.py          — batched email + Slack, daemon thread
-    [x] main.py                       — threading, graceful shutdown, queue drain
-    [x] nids (shell script)           — `nids --interface wlan0`
-    [x] scripts/gen_traffic.py        — traffic generator for rule validation
+    [x] alerting/notifier.py           — batched email + Slack, daemon thread
+    [x] main.py                        — threading, local-IP exclusion, graceful shutdown
+    [x] nids (shell script)            — starts dashboard + capture engine together
+    [x] scripts/gen_traffic.py         — 52 attacks + 10 scenarios + interactive mode
+    [x] scripts/replay_pcap.py         — offline pcap analysis with full threat report
     [x] requirements.txt
     [x] setup.sh
-    [x] .gitignore
-    [x] dashboard/app.py              — Flask backend, 6 API endpoints
-    [x] dashboard/templates/          — full web UI with charts and filter bar
-    [x] scripts/replay_pcap.py        — offline pcap analysis with full threat report
+    [x] .env.example                   — documented environment variable template
+    [x] .gitignore                     — excludes logs/, .env, .venv/
+    [x] dashboard/app.py               — Flask backend, 15 REST endpoints, capture control
+    [x] dashboard/pcap_app.py          — standalone offline PCAP analysis server (port 5001)
+    [x] dashboard/templates/index.html — live dashboard: 7 views, collapsible sidebar,
+                                         dark/light theme, investigation drawer, attack map,
+                                         PCAP tab, toast notifications, keyboard shortcuts
+    [x] dashboard/templates/pcap_dashboard.html — standalone PCAP analysis UI
+    [x] dashboard/static/nids-ui.jsx   — UI primitives: badges, toasts, investigate drawer
+    [x] dashboard/static/nids-charts.jsx — Chart.js wrappers + SVG world map
+    [x] dashboard/static/nids-data.js  — demo data, rule list, geo coordinates
+    [x] dashboard/static/tweaks-panel.jsx — settings panel component
+    [x] deploy/nids.service            — systemd unit for capture engine
+    [x] deploy/nids-dashboard.service  — systemd unit for web dashboard
+    [x] deploy/nids-logrotate          — logrotate config, daily rotation, 30-day retention
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -501,9 +623,6 @@ typing          Standard library — TypedDict, Literal, NotRequired.
 
   - No HTTPS. Dashboard traffic is unencrypted.
 
-  - No rule hot-reload from dashboard. Signatures can only be edited by
-    modifying detection/signatures.py and restarting the process.
-
 
 ────────────────────────────────────────────────────────────────────────────────
   8. FUTURE IMPROVEMENTS
@@ -511,32 +630,29 @@ typing          Standard library — TypedDict, Literal, NotRequired.
 
   NEAR-TERM (operational gaps)
 
-  [ ] .env.example
-        A documented template listing every required environment variable
-        (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SLACK_WEBHOOK,
-        ALERT_EMAIL, INTERFACE) with example values and brief explanations.
+  [x] .env.example — committed at root, documents every required variable.
 
-  [ ] systemd service file
-        Run NIDS as a background service on boot. The unit file should
-        specify: ExecStart path, User=root (required for raw sockets),
-        Restart=on-failure, and StandardOutput/Error to journald.
+  [x] systemd service files — deploy/nids.service (capture, root) and
+        deploy/nids-dashboard.service (web UI, normal user).
 
-  [ ] logrotate configuration
-        Rotate logs/nids.log daily, compress, keep 30 days. Use a
-        postrotate stanza that sends SIGHUP to the NIDS process so the
-        logger reopens the file (already supported in alerting/logger.py).
+  [x] logrotate configuration — deploy/nids-logrotate, daily/30-day/SIGHUP.
+
+  [x] IP allowlist — allowlist.py + allowlist.json; supports IP/CIDR entries,
+        editable from the dashboard, hot-reloaded every 2 minutes.
+
+  [x] Full-featured web dashboard — 7 views (Dashboard, Alert Feed, Attack Map,
+        Rules, Analytics, Allowlist, PCAP Analysis), collapsible sidebar,
+        dark/light theme, IP investigation drawer, toast notifications,
+        keyboard shortcuts, CSV export, capture engine control, demo mode.
+
+  [x] Offline PCAP analysis — drag-and-drop upload in both the standalone
+        pcap_app.py server and as an embedded tab in the live dashboard.
 
   [ ] Notifier rate-limit
         The notifier already batches alerts within a 3-second window,
         but a sustained multi-hour attack can still produce hundreds of
         batched emails. Add a maximum notifications-per-hour cap so the
         analyst's inbox does not flood.
-
-  [ ] IP allowlist in config
-        Suppress alerts originating from known-safe source IPs such as
-        your router, a monitoring host, or a vulnerability scanner you
-        control. A simple list in config.py checked before the deduplicator
-        would suffice.
 
   MEDIUM-TERM (capability improvements)
 
@@ -576,10 +692,9 @@ typing          Standard library — TypedDict, Literal, NotRequired.
         runtime without stopping packet capture. Would allow adding new
         rules to a running deployment without a service restart.
 
-  [ ] Alert export
-        Add a dashboard button to export the current filtered view as
-        a CSV file. Analysts often need to pull data into spreadsheets
-        or share it with colleagues who do not have dashboard access.
+  [x] Alert CSV export
+        Dashboard "Alert Feed" view has a CSV export button that downloads
+        the current filtered view. PCAP analysis results are also exportable.
 
   LONG-TERM (architectural additions)
 

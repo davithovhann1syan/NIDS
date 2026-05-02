@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess as _sp
 import sys
+import threading
+import tempfile
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,14 +16,48 @@ import ipaddress
 import re
 
 from flask import Flask, jsonify, send_from_directory, request, abort
+from werkzeug.utils import secure_filename
 
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
-import allowlist  # noqa: E402
-import config     # noqa: E402
+import allowlist                          # noqa: E402
+import config                             # noqa: E402
+from detection.categories import RULE_CATEGORY, SEV_ORDER  # noqa: E402
 
 app = Flask(__name__)
 _LOG_PATH = _project_root / config.LOG_PATH
+
+# ── Capture engine process management ─────────────────────────────────────────
+_capture_proc:       "_sp.Popen | None" = None
+_capture_started_at: "datetime | None"  = None
+_capture_iface: str                     = config.INTERFACE
+_capture_lock                           = threading.Lock()
+
+
+def _find_external_nids_pid() -> "int | None":
+    """Return the PID of a running main.py process we did not spawn ourselves."""
+    try:
+        result = _sp.run(
+            ["pgrep", "-a", "-f", r"python.*main\.py"],
+            capture_output=True, text=True, timeout=2,
+        )
+        my_pid = os.getpid()
+        for line in result.stdout.strip().splitlines():
+            parts = line.split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid == my_pid:
+                continue
+            cmd = parts[1] if len(parts) > 1 else ""
+            if "main.py" in cmd:
+                return pid
+    except Exception:
+        pass
+    return None
 
 _IP_RE = re.compile(
     r'^('
@@ -43,104 +84,6 @@ def set_security_headers(resp):
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
-
-# Map rule names → display category (mirrors section headers in signatures.py)
-RULE_CATEGORY: dict[str, str] = {
-    # Reconnaissance
-    "Port Scan (SYN)":                          "Reconnaissance",
-    "Port Scan (Distinct Ports)":               "Reconnaissance",
-    "Host Discovery Sweep (Distinct IPs)":      "Reconnaissance",
-    "Null Scan":                                "Reconnaissance",
-    "XMAS Scan":                                "Reconnaissance",
-    "FIN Scan":                                 "Reconnaissance",
-    "Maimon Scan":                              "Reconnaissance",
-    "ACK Scan":                                 "Reconnaissance",
-    "ICMP Host Sweep (Ping Sweep)":             "Reconnaissance",
-    "UDP Port Scan":                            "Reconnaissance",
-    "Invalid TCP Flags: SYN+RST":              "Reconnaissance",
-    "Invalid TCP Flags: SYN+FIN":              "Reconnaissance",
-    "Oversized ICMP Packet":                    "Reconnaissance",
-    "Low TTL Probe (Traceroute / Evasion)":     "Reconnaissance",
-    "TCP SYN with Large Payload":               "Reconnaissance",
-    # Brute Force
-    "SSH Brute Force":                          "Brute Force",
-    "RDP Brute Force":                          "Brute Force",
-    "FTP Brute Force":                          "Brute Force",
-    "Telnet Brute Force":                       "Brute Force",
-    "SMTP Auth Brute Force":                    "Brute Force",
-    "IMAP Brute Force":                         "Brute Force",
-    "POP3 Brute Force":                         "Brute Force",
-    "VNC Brute Force":                          "Brute Force",
-    "MySQL Brute Force":                        "Brute Force",
-    "PostgreSQL Brute Force":                   "Brute Force",
-    "MSSQL Brute Force":                        "Brute Force",
-    "Kerberos Brute Force (AS-REP Roasting / Password Spray)": "Brute Force",
-    # Denial of Service
-    "SYN Flood":                                "Denial of Service",
-    "ICMP Flood":                               "Denial of Service",
-    "UDP Flood":                                "Denial of Service",
-    "RST Flood":                                "Denial of Service",
-    "ACK Flood":                                "Denial of Service",
-    "DNS Amplification Attack":                 "Denial of Service",
-    "NTP Amplification Attack":                 "Denial of Service",
-    "Memcached Exposed (DDoS Amplification)":   "Denial of Service",
-    # Suspicious Services
-    "Telnet Attempt":                           "Suspicious Services",
-    "FTP Cleartext Login":                      "Suspicious Services",
-    "rlogin / rsh Attempt":                     "Suspicious Services",
-    "TFTP Access":                              "Suspicious Services",
-    "SNMP Access (v1/v2)":                      "Suspicious Services",
-    "NFS Access":                               "Suspicious Services",
-    "LLMNR Traffic (Possible Responder / MITM)": "Suspicious Services",
-    "SSDP / UPnP Discovery":                    "Suspicious Services",
-    # Command & Control
-    "Known C2 / Backdoor Port":                 "Malware & C2",
-    "Possible Reverse Shell (High Outbound Port)": "Malware & C2",
-    "IRC Traffic (Possible Botnet C2)":         "Malware & C2",
-    "Tor Default Port":                         "Malware & C2",
-    "DNS over Non-Standard Port (Possible DNS Tunneling)": "Malware & C2",
-    "Cobalt Strike Default Beacon Port":        "Malware & C2",
-    "Netcat / Bind Shell Default Port":         "Malware & C2",
-    "Aggressive Outbound SYN Rate (Worm / Scanner)": "Malware & C2",
-    # Lateral Movement
-    "SMB Access (Possible Lateral Movement)":   "Lateral Movement",
-    "SMB Sweep (Ransomware Propagation)":       "Lateral Movement",
-    "WinRM Access (Possible Lateral Movement)": "Lateral Movement",
-    "DCOM / RPC Access":                        "Lateral Movement",
-    "NetBIOS Name / Datagram Service":          "Lateral Movement",
-    "LDAP Enumeration":                         "Lateral Movement",
-    # Exposed Services
-    "Log4Shell Target Port (8080/8443)":        "Exposed Services",
-    "Redis Exposed (No Auth)":                  "Exposed Services",
-    "Elasticsearch Exposed":                    "Exposed Services",
-    "MongoDB Exposed":                          "Exposed Services",
-    "Docker API Exposed":                       "Exposed Services",
-    "Kubernetes API Exposed":                   "Exposed Services",
-    "etcd Exposed":                             "Exposed Services",
-    "CouchDB Exposed":                          "Exposed Services",
-    "Hadoop / HDFS Exposed":                    "Exposed Services",
-    # Exfiltration
-    "DNS Query Flood UDP (Possible DNS Tunneling)": "Exfiltration",
-    "DNS Query Flood TCP (Possible DNS Tunneling)": "Exfiltration",
-    "ICMP Exfiltration (Large Volume)":         "Exfiltration",
-    "FTP Data Channel (Possible Exfiltration)": "Exfiltration",
-    # Network Infrastructure Attacks
-    "BGP Connection Attempt":                   "Infrastructure Attack",
-    "OSPF Injection":                           "Infrastructure Attack",
-    "EIGRP Traffic":                            "Infrastructure Attack",
-    "GRE Tunnel Traffic":                       "Infrastructure Attack",
-    "IPv6-in-IPv4 Tunnel":                      "Infrastructure Attack",
-    "ICMP Redirect (Routing Manipulation)":     "Infrastructure Attack",
-    # ICS / SCADA
-    "Modbus Access (ICS Protocol)":             "ICS / SCADA",
-    "DNP3 Access (ICS Protocol)":               "ICS / SCADA",
-    "EtherNet/IP Access (ICS Protocol)":        "ICS / SCADA",
-    "BACnet Access (Building Automation)":      "ICS / SCADA",
-    # Miscellaneous
-    "Proxy / Anonymizer Port":                  "Policy Violation",
-    "P2P / BitTorrent Port":                    "Policy Violation",
-    "Cryptocurrency Mining Pool":               "Policy Violation",
-}
 
 
 def _read_alerts(limit: int = 500) -> list[dict]:
@@ -351,6 +294,345 @@ def api_allowlist_remove():
     if not allowlist.remove_entry(entry):
         abort(404)
     return jsonify({"entries": allowlist.get_entries()})
+
+
+# ── Capture engine control ────────────────────────────────────────────────────
+
+@app.route("/api/capture/status")
+def api_capture_status():
+    with _capture_lock:
+        proc    = _capture_proc
+        started = _capture_started_at
+        iface   = _capture_iface
+
+    running  = False
+    pid      = None
+    uptime_s = 0
+    external = False
+
+    if proc is not None and proc.poll() is None:
+        running  = True
+        pid      = proc.pid
+        if started:
+            uptime_s = int((datetime.now(timezone.utc) - started).total_seconds())
+    else:
+        ext_pid = _find_external_nids_pid()
+        if ext_pid:
+            running  = True
+            pid      = ext_pid
+            external = True
+
+    return jsonify({
+        "running":    running,
+        "pid":        pid,
+        "interface":  iface,
+        "started_at": started.isoformat() if started else None,
+        "uptime_s":   uptime_s,
+        "external":   external,
+    })
+
+
+@app.route("/api/capture/start", methods=["POST"])
+def api_capture_start():
+    global _capture_proc, _capture_started_at, _capture_iface
+    body  = request.get_json(silent=True) or {}
+    iface = (body.get("interface") or "").strip() or config.INTERFACE
+
+    if not re.match(r'^[a-zA-Z0-9\-:\.]+$', iface):
+        abort(400)
+
+    with _capture_lock:
+        if _capture_proc and _capture_proc.poll() is None:
+            return jsonify({"error": "Capture already running"}), 409
+        try:
+            cmd  = ["sudo", "-n", sys.executable,
+                    str(_project_root / "main.py"), "--interface", iface]
+            proc = _sp.Popen(cmd, cwd=str(_project_root),
+                             stdout=_sp.DEVNULL, stderr=_sp.PIPE)
+            # Brief pause to catch immediate sudo failures
+            time.sleep(0.35)
+            if proc.poll() is not None:
+                err = proc.stderr.read().decode(errors="replace").strip()
+                hint = ("sudo requires a password — add NOPASSWD to /etc/sudoers "
+                        "or start from terminal: sudo python main.py")
+                return jsonify({"error": err or hint}), 500
+            _capture_proc       = proc
+            _capture_started_at = datetime.now(timezone.utc)
+            _capture_iface      = iface
+        except FileNotFoundError:
+            return jsonify({
+                "error": "sudo not found. Start capture from terminal: sudo python main.py"
+            }), 500
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"status": "started", "pid": _capture_proc.pid, "interface": iface})
+
+
+@app.route("/api/capture/stop", methods=["POST"])
+def api_capture_stop():
+    global _capture_proc, _capture_started_at
+    with _capture_lock:
+        proc = _capture_proc
+
+    if proc is not None and proc.poll() is None:
+        try:
+            os.kill(proc.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        with _capture_lock:
+            _capture_proc       = None
+            _capture_started_at = None
+        return jsonify({"status": "stopped"})
+
+    ext_pid = _find_external_nids_pid()
+    if ext_pid:
+        try:
+            result = _sp.run(
+                ["sudo", "-n", "kill", "-INT", str(ext_pid)],
+                capture_output=True, timeout=3,
+            )
+            if result.returncode == 0:
+                return jsonify({"status": "stopped", "pid": ext_pid})
+            err = result.stderr.decode(errors="replace").strip()
+            return jsonify({
+                "error": f"Cannot stop PID {ext_pid}: {err or 'sudo permission denied'}"
+            }), 500
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"error": "No running capture found"}), 404
+
+
+# ── PCAP Analysis ─────────────────────────────────────────────────────────────
+
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+
+PCAP_ALLOWED_EXT = frozenset({".pcap", ".pcapng", ".cap"})
+_UPLOAD_DIR      = Path(tempfile.gettempdir()) / "nids_pcap_uploads"
+_UPLOAD_DIR.mkdir(exist_ok=True)
+
+_PCAP_ALERTS: list[dict] = []
+_PCAP_DATA:   dict       = {}
+_PCAP_STATE:  dict       = {"status": "idle", "error": None, "pcap_name": ""}
+_PCAP_LOCK                = threading.Lock()
+
+_SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+_SEV_RANK  = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+
+def _pcap_iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _pcap_build_aggregates(alerts: list[dict], pcap_name: str) -> dict:
+    by_sev:   dict[str, int]  = defaultdict(int)
+    by_rule:  dict[str, dict] = {}
+    by_cat:   dict[str, int]  = defaultdict(int)
+    by_ip:    dict[str, dict] = {}
+    timeline: dict[str, dict] = {}
+
+    for a in alerts:
+        sev  = a.get("severity", "LOW")
+        rule = a.get("rule", "Unknown")
+        src  = a.get("src_ip", "?")
+        cat  = a.get("category", "Other")
+        ts   = a.get("timestamp", "")
+
+        by_sev[sev] += 1
+        by_cat[cat] += 1
+
+        if rule not in by_rule:
+            by_rule[rule] = {"count": 0, "severity": sev, "category": cat}
+        by_rule[rule]["count"] += 1
+
+        if src not in by_ip:
+            by_ip[src] = {"count": 0, "worst_sev": sev, "score": 0,
+                          "categories": set(), "rules": set()}
+        entry = by_ip[src]
+        entry["count"] += 1
+        if _SEV_RANK[sev] > _SEV_RANK[entry["worst_sev"]]:
+            entry["worst_sev"] = sev
+        score = a.get("threat_score") or 0
+        if score > entry["score"]:
+            entry["score"] = score
+        entry["categories"].add(cat)
+        entry["rules"].add(rule)
+
+        bucket = ts[:16] if len(ts) >= 16 else ts
+        if bucket not in timeline:
+            timeline[bucket] = {"t": bucket, "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        timeline[bucket][sev] = timeline[bucket].get(sev, 0) + 1
+
+    timestamps = [a.get("timestamp", "") for a in alerts if a.get("timestamp")]
+    first_ts   = min(timestamps) if timestamps else ""
+    last_ts    = max(timestamps) if timestamps else ""
+
+    return {
+        "meta": {
+            "pcap_file":    pcap_name,
+            "analyzed_at":  datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "total_alerts": len(alerts),
+            "first_ts":     first_ts[:19].replace("T", " ") if first_ts else "—",
+            "last_ts":      last_ts[:19].replace("T", " ")  if last_ts  else "—",
+        },
+        "by_severity": {sev: by_sev.get(sev, 0) for sev in _SEV_ORDER},
+        "by_category":  dict(sorted(by_cat.items(), key=lambda x: x[1], reverse=True)),
+        "top_rules":    [
+            {"rule": r, **info}
+            for r, info in sorted(by_rule.items(), key=lambda x: x[1]["count"], reverse=True)[:15]
+        ],
+        "top_ips": [
+            {
+                "ip":         ip,
+                "count":      info["count"],
+                "worst_sev":  info["worst_sev"],
+                "score":      info["score"],
+                "categories": sorted(info["categories"]),
+                "rules":      sorted(info["rules"]),
+            }
+            for ip, info in sorted(
+                by_ip.items(),
+                key=lambda x: (_SEV_RANK[x[1]["worst_sev"]], x[1]["score"], x[1]["count"]),
+                reverse=True,
+            )[:20]
+        ],
+        "timeline": sorted(timeline.values(), key=lambda x: x["t"]),
+        "alerts":   alerts,
+    }
+
+
+def _pcap_analyze(pcap_path: Path) -> None:
+    global _PCAP_ALERTS, _PCAP_DATA
+    try:
+        from scapy.all import PcapReader  # type: ignore[import]
+    except ImportError:
+        raise RuntimeError("scapy is not installed — run: pip install scapy")
+
+    from parser.extractor import extract
+    from detection.sig_detector import SignatureDetector
+    from detection.correlator import Correlator
+
+    detector   = SignatureDetector()
+    correlator = Correlator()
+    alerts: list[dict] = []
+
+    with PcapReader(str(pcap_path)) as reader:
+        for pkt in reader:
+            pkt_ts = float(pkt.time)
+            try:
+                features = extract(pkt)
+            except ValueError:
+                continue
+            features["timestamp"] = pkt_ts  # type: ignore[typeddict-unknown-key]
+            raw_alerts = detector.process(features)
+            alert      = correlator.correlate(raw_alerts)
+            if alert is None:
+                continue
+            record: dict = {
+                "timestamp":      _pcap_iso(pkt_ts),
+                "rule":           alert["rule"],
+                "severity":       alert["severity"],
+                "src_ip":         alert["src_ip"],
+                "dst_ip":         alert["dst_ip"],
+                "dst_port":       alert["dst_port"],
+                "protocol":       alert["protocol"],
+                "correlated":     alert["correlated"],
+                "also_triggered": alert["also_triggered"],
+                "threat_score":   alert.get("threat_score", 0),
+                "category":       RULE_CATEGORY.get(alert["rule"], "Other"),
+            }
+            if "count" in alert:
+                record["count"] = alert["count"]
+            alerts.append(record)
+
+    _PCAP_ALERTS = alerts
+    _PCAP_DATA   = _pcap_build_aggregates(alerts, pcap_path.name)
+
+
+@app.route("/pcap/api/status")
+def pcap_api_status():
+    with _PCAP_LOCK:
+        return jsonify(dict(_PCAP_STATE))
+
+
+@app.route("/pcap/api/data")
+def pcap_api_data():
+    if not _PCAP_DATA:
+        abort(404)
+    return jsonify(_PCAP_DATA)
+
+
+@app.route("/pcap/api/ip/<ip>")
+def pcap_api_ip(ip: str):
+    if not ip or not _valid_ip(ip):
+        abort(400)
+    alerts  = [a for a in _PCAP_ALERTS if a.get("src_ip") == ip]
+    by_rule: dict[str, int] = defaultdict(int)
+    by_sev:  dict[str, int] = defaultdict(int)
+    for a in alerts:
+        by_rule[a.get("rule", "Unknown")] += 1
+        by_sev[a.get("severity", "LOW")] += 1
+    return jsonify({
+        "ip":      ip,
+        "total":   len(alerts),
+        "by_sev":  dict(by_sev),
+        "by_rule": dict(sorted(by_rule.items(), key=lambda x: x[1], reverse=True)),
+        "alerts":  sorted(alerts, key=lambda a: a.get("timestamp", ""), reverse=True),
+    })
+
+
+@app.route("/pcap/upload", methods=["POST"])
+def pcap_upload():
+    with _PCAP_LOCK:
+        if _PCAP_STATE["status"] == "running":
+            return jsonify({"status": "error", "error": "An analysis is already running"}), 409
+
+    f = request.files.get("pcap")
+    if not f or not f.filename:
+        return jsonify({"status": "error", "error": "No file provided"}), 400
+
+    filename = secure_filename(f.filename or "upload.pcap")
+    ext      = Path(filename).suffix.lower()
+    if ext not in PCAP_ALLOWED_EXT:
+        return jsonify({
+            "status": "error",
+            "error":  f"Unsupported file type '{ext}'. Upload a .pcap, .pcapng, or .cap file.",
+        }), 400
+
+    save_path = _UPLOAD_DIR / filename
+    try:
+        f.save(str(save_path))
+        with _PCAP_LOCK:
+            _PCAP_STATE["status"]    = "running"
+            _PCAP_STATE["pcap_name"] = filename
+            _PCAP_STATE["error"]     = None
+        _pcap_analyze(save_path)
+        with _PCAP_LOCK:
+            _PCAP_STATE["status"] = "done"
+        return jsonify({"status": "done", "total": len(_PCAP_ALERTS)})
+    except Exception as exc:
+        with _PCAP_LOCK:
+            _PCAP_STATE["status"] = "error"
+            _PCAP_STATE["error"]  = str(exc)
+        return jsonify({"status": "error", "error": str(exc)}), 500
+    finally:
+        try:
+            save_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@app.route("/pcap/reset")
+def pcap_reset():
+    global _PCAP_ALERTS, _PCAP_DATA
+    with _PCAP_LOCK:
+        _PCAP_ALERTS = []
+        _PCAP_DATA   = {}
+        _PCAP_STATE["status"]    = "idle"
+        _PCAP_STATE["error"]     = None
+        _PCAP_STATE["pcap_name"] = ""
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ import config
 from capture.queue_manager import PacketQueue
 from capture.sniffer import start_sniffing
 from parser.extractor import extract
+from scapy.all import get_if_addr
 from detection.sig_detector import SignatureDetector
 from detection.correlator import Correlator
 from alerting.deduplicator import Deduplicator
@@ -60,6 +61,13 @@ def _print_stats(
 
 def main() -> None:
     args = _parse_args()
+
+    # ── Local IP exclusion set — prevents own machine from appearing as attacker ─
+    try:
+        _local_ip = get_if_addr(args.interface)
+    except Exception:
+        _local_ip = ""
+    local_ips: frozenset[str] = frozenset(filter(None, {"127.0.0.1", "::1", _local_ip}))
 
     # ── Component setup ───────────────────────────────────────────────────────
     pkt_queue  = PacketQueue()
@@ -112,6 +120,10 @@ def main() -> None:
             try:
                 features = extract(pkt)
             except ValueError:
+                continue
+
+            # Skip packets originating from this machine — own traffic is not an attack.
+            if features["src_ip"] in local_ips:
                 continue
 
             # Skip packets from allowlisted source IPs.
@@ -167,6 +179,8 @@ def main() -> None:
                 pkt_queue.task_done()
                 try:
                     features   = extract(pkt)
+                    if features["src_ip"] in local_ips:
+                        continue
                     raw_alerts = detector.process(features)
                     alert      = correlator.correlate(raw_alerts)
                     if alert and not dedup.is_duplicate(alert):

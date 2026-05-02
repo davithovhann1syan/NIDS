@@ -305,6 +305,32 @@ async function nidsRemoveAllowlistEntry(entry) {
   } catch { return false; }
 }
 
+async function nidsFetchCaptureStatus() {
+  try {
+    const r = await fetch('/api/capture/status');
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function nidsStartCapture(iface) {
+  try {
+    const r = await fetch('/api/capture/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interface: iface }),
+    });
+    return await r.json();
+  } catch (e) { return { error: e.message }; }
+}
+
+async function nidsStopCapture() {
+  try {
+    const r = await fetch('/api/capture/stop', { method: 'POST' });
+    return await r.json();
+  } catch (e) { return { error: e.message }; }
+}
+
 function nidsExportCSV(alerts) {
   const cols = ["id","timestamp","severity","rule","category","type","protocol",
                 "src_ip","src_country","dst_ip","dst_port","count","ttl","length","mitre"];
@@ -328,5 +354,6 @@ Object.assign(window, {
   nidsGenAlert, nidsGenHistory, nidsEnrichAlert,
   nidsFetchAlerts, nidsFetchHealth, nidsFetchStats,
   nidsFetchAllowlist, nidsAddAllowlistEntry, nidsRemoveAllowlistEntry,
+  nidsFetchCaptureStatus, nidsStartCapture, nidsStopCapture,
   nidsExportCSV,
 });

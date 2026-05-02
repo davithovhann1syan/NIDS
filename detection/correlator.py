@@ -20,6 +20,7 @@ class CorrelatedAlert(TypedDict):
     also_triggered:  list[str]      # names of every other rule that also fired
     count:           NotRequired[int]   # carried from the leading alert if it's a rate rule
     threat_score:    NotRequired[int]   # 0–100: IP's cross-packet attack diversity score
+    id:              NotRequired[str]   # rule ID from signatures.py (e.g. "R001")
 
 
 _SEV_UP: dict[str, Severity] = {
@@ -115,6 +116,9 @@ class Correlator:
 
         if "count" in leader:
             correlated["count"] = leader["count"]
+
+        if "id" in leader:
+            correlated["id"] = leader["id"]
 
         return correlated
 

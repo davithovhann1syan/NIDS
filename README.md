@@ -1,6 +1,6 @@
 # Network Intrusion Detection System (NIDS)
 
-A Python-based Network Intrusion Detection System using Scapy for packet capture, a three-type signature engine (pattern, rate, multi-destination) with cross-packet threat correlation, structured JSON logging, batched email/Slack notifications, and a live Flask web dashboard. 83 rules across 11 threat categories. Designed for low-to-medium traffic internal network segments (< 100 Mbps).
+A Python-based Network Intrusion Detection System using Scapy for packet capture, a three-type signature engine (pattern, rate, multi-destination) with cross-packet threat correlation, structured JSON logging, batched email/Slack notifications, and a live Flask web dashboard. 74 rules across 11 threat categories. Designed for low-to-medium traffic internal network segments (< 100 Mbps).
 
 ---
 
@@ -60,10 +60,13 @@ If the system cannot keep up with traffic, packets are **dropped at the queue bo
 nids/
 ├── main.py                      # Entry point — starts threads, handles shutdown
 ├── config.py                    # Single source of truth for all tuneable values
-├── nids                         # Shell script wrapper: nids --interface wlan0
+├── allowlist.py                 # IP/CIDR allowlist — suppress alerts from trusted hosts
+├── allowlist.json               # Allowlisted entries (editable from dashboard or directly)
+├── nids                         # Shell script wrapper: ./nids --interface wlan0
 ├── requirements.txt
 ├── setup.sh                     # Installs dependencies and sets up the environment
-├── .gitignore                   # Excludes: logs/, .env
+├── .env.example                 # Documented template of all environment variables
+├── .gitignore                   # Excludes: logs/, .env, .venv/
 │
 ├── capture/
 │   ├── sniffer.py               # Scapy sniff() — enqueues packets, nothing else
@@ -73,9 +76,10 @@ nids/
 │   └── extractor.py             # Packet → FeatureDict. Handles missing layers safely.
 │
 ├── detection/
-│   ├── signatures.py            # 83 rule definitions (pattern, rate, multi_destination)
+│   ├── signatures.py            # 74 rule definitions (pattern, rate, multi_destination)
 │   ├── sig_detector.py          # Pattern match + rate + multi_destination engine
-│   └── correlator.py            # Per-packet correlation + cross-packet threat scoring
+│   ├── correlator.py            # Per-packet correlation + cross-packet threat scoring
+│   └── categories.py            # RULE_CATEGORY dict + SEV_ORDER — single source of truth
 │
 ├── alerting/
 │   ├── deduplicator.py          # Suppresses (rule, src_ip) repeats within cooldown
@@ -83,15 +87,26 @@ nids/
 │   └── notifier.py              # Batched email + Slack dispatch, daemon thread
 │
 ├── dashboard/
-│   ├── app.py                   # Flask backend — 6 REST API endpoints
+│   ├── app.py                   # Live dashboard — Flask REST API + capture engine control
+│   ├── pcap_app.py              # Offline PCAP dashboard — upload & analyse .pcap files
 │   ├── templates/
-│   │   └── index.html           # Full web UI (live table, charts, filter bar)
-│   └── static/                  # JS/JSX component files
+│   │   ├── index.html           # Live dashboard UI (React, 7 views, dark/light theme)
+│   │   └── pcap_dashboard.html  # Standalone PCAP analysis UI (served by pcap_app.py)
+│   └── static/                  # JS/JSX component files loaded by index.html
+│       ├── nids-data.js         # Demo data, rule list, geo data
+│       ├── nids-ui.jsx          # UI primitives: badges, drawers, toasts, shortcuts
+│       ├── nids-charts.jsx      # Chart.js wrappers + SVG world map
+│       └── tweaks-panel.jsx     # Settings panel component
+│
+├── deploy/
+│   ├── nids.service             # systemd unit for the capture engine (runs as root)
+│   ├── nids-dashboard.service   # systemd unit for the dashboard (runs as normal user)
+│   └── nids-logrotate           # logrotate config — daily rotation, 30-day retention
 │
 ├── scripts/
-│   ├── gen_traffic.py           # Crafts malicious packets to validate signatures
+│   ├── gen_traffic.py           # 52 attacks + 10 scenarios + interactive mode
 │   ├── test_capture.py          # Smoke test for sniffer + extractor on live traffic
-│   └── replay_pcap.py           # Feed a .pcap through the detection engine for offline analysis
+│   └── replay_pcap.py           # Feed a .pcap through the detection engine offline
 │
 └── logs/
     └── nids.log                 # Gitignored. Append-only JSON lines.
@@ -193,7 +208,7 @@ match protocol:
 
 ### Rule Types — `detection/signatures.py`
 
-Rules are plain Python dicts — data, not code. All 83 rules live in `signatures.py` only; no rule logic leaks into `sig_detector.py`.
+Rules are plain Python dicts — data, not code. All 74 rules live in `signatures.py` only; no rule logic leaks into `sig_detector.py`.
 
 **Pattern Rule** — fires on a single packet that satisfies all conditions:
 
@@ -299,13 +314,22 @@ Key behaviors:
 
 ---
 
-## Dashboard — `dashboard/app.py`
+## Dashboard
 
-A Flask app running as a **separate process** that reads `nids.log` directly — it imports nothing from the detection layer. A bug in the dashboard cannot affect packet capture or detection.
+Two Flask applications serve the dashboard, both importable from the project root.
+
+### Live Dashboard — `dashboard/app.py`
+
+Runs as a **separate process** that reads `nids.log` directly — it imports nothing from the detection layer. A bug in the dashboard cannot affect packet capture or detection.
 
 Tail-first log reading: seeks from the end of the file so large logs do not cause memory spikes.
 
-### REST API
+```bash
+python -m dashboard.app
+# open http://localhost:5000  (no root required)
+```
+
+#### REST API
 
 | Endpoint | Description |
 |----------|-------------|
@@ -315,27 +339,65 @@ Tail-first log reading: seeks from the end of the file so large logs do not caus
 | `GET /api/health` | Active interface, log file size, `rules_active` count |
 | `GET /api/rules` | Full rule list with name, severity, type, category, MITRE ATT&CK ID |
 | `GET /api/ip/<ip>` | Per-IP investigation: risk score (0–100), first/last seen, breakdown by severity and rule, 20 most recent events |
+| `GET /api/capture_status` | Whether the capture engine is running, its PID, uptime, and interface |
+| `POST /api/capture_start` | Spawn `main.py` as a subprocess (body: `{"interface": "wlan0"}`) |
+| `POST /api/capture_stop` | Send SIGTERM to the running capture subprocess |
+| `GET /api/allowlist` | List all allowlisted IPs and subnets |
+| `POST /api/allowlist/add` | Add an IP or CIDR subnet (body: `{"entry": "10.0.0.0/8"}`) |
+| `POST /api/allowlist/remove` | Remove an entry |
+| `POST /pcap/upload` | Upload a .pcap file for offline analysis |
+| `GET /pcap/api/status` | PCAP analysis job status: `idle`, `running`, `done`, `error` |
+| `GET /pcap/api/data` | Full analysis results (alerts, aggregates, timeline) |
+| `GET /pcap/api/ip/<ip>` | Per-IP investigation within the loaded PCAP |
+| `POST /pcap/reset` | Clear the current PCAP analysis result |
 
 Risk score formula (per IP):
 ```
 score = min(100, CRITICAL_count × 20 + HIGH_count × 8 + min(total_alerts × 2, 40))
 ```
 
-### Frontend
+#### Frontend — 7 Views
 
-- Live alert table, auto-refreshes every 5 seconds
-- Color-coded rows: CRITICAL=red, HIGH=orange, MEDIUM=yellow, LOW=blue
-- Pause button to stop auto-refresh while reading
-- Filter bar: by severity, rule name, source IP
-- Stats bar: total today, CRITICAL/HIGH counts, top attacking IP
-- Charts (Chart.js via CDN): alerts over time, by severity, top IPs, top rules
-- Tweaks panel for runtime display settings
-- Rule browser: all 83 signatures with category and MITRE ID
+The UI (`index.html`) is a single-page React app with a collapsible sidebar (state persists across sessions), dark/light theme toggle, and keyboard shortcuts.
 
-To run:
+| View | Key | Description |
+|------|-----|-------------|
+| Dashboard | `1` | Stat cards, threat posture banner, timeline chart, severity donut, live alert table, top attackers |
+| Alert Feed | `2` | Full alert table with filters (severity, category, source IP, rule), pause/resume, CSV export |
+| Attack Map | `3` | SVG world map — dots sized by alert volume, colored by severity; click to investigate IP |
+| Rules | `4` | All 74 signatures grouped by category, with hit counts, severity badges, and MITRE ATT&CK IDs |
+| Analytics | `5` | Category breakdown cards, top IPs/ports/rules bar charts, MITRE technique frequency |
+| Allowlist | `6` | Add/remove trusted IPs and CIDR subnets; changes take effect within ~2 minutes |
+| PCAP Analysis | `7` | Drag-and-drop .pcap upload; runs all 74 signatures offline; Overview / Alerts / Attackers / Timeline tabs |
+
+Additional UI features:
+- **Collapsible sidebar** — click the `‹/›` chevron to collapse to a 52px icon rail; saves horizontal space on smaller screens
+- **Capture engine control** — start/stop `main.py` from the sidebar without touching the terminal
+- **IP investigation drawer** — click any source IP to open a side panel with risk score, first/last seen, top rules, MITRE techniques, and recent events
+- **Toast notifications** — pop-up alerts for CRITICAL/HIGH events (configurable to CRITICAL-only)
+- **Demo mode banner** — shown when no live backend is detected; displays simulated traffic so the UI is fully explorable without running the engine
+- **Keyboard shortcuts** — `P` pause, `E` export CSV, `C` clear filters, `T` toggle theme, `/` focus rule search, `?` show all shortcuts
+- **Tweaks panel** — runtime controls for refresh interval, max table rows, compact mode
+
+### Standalone PCAP Dashboard — `dashboard/pcap_app.py`
+
+An independent Flask app for offline analysis without the live dashboard running. Useful for analysing captures on a machine where the engine was never deployed.
+
 ```bash
-python -m dashboard.app
-# open http://localhost:5000  (no root required)
+python -m dashboard.pcap_app
+# open http://localhost:5001
+```
+
+Accepts the same drag-and-drop upload interface as the embedded PCAP view. Also supports a CLI mode for scripted use:
+
+```bash
+python dashboard/pcap_app.py --file alerts.json --pcap capture.pcap
+```
+
+Or via the shell wrapper:
+
+```bash
+./nids --offline capture.pcap
 ```
 
 ---
@@ -343,15 +405,31 @@ python -m dashboard.app
 ## Scripts
 
 ### `scripts/gen_traffic.py` — Traffic Generator
-Crafts and sends real packets that trigger NIDS signatures. Use this to validate that rules fire correctly on a test network. **Root required.**
+Crafts and sends real packets that trigger NIDS signatures. 52 individual attacks covering all 74 rules, plus 10 pre-built multi-step scenarios. **Root required.**
 
 ```bash
+# Browse everything available
 sudo python scripts/gen_traffic.py --list
+sudo python scripts/gen_traffic.py --scenarios
+
+# Single attack
 sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_scan
 sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack brute_force --port 22
 sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_flood --count 250
-sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack c2_beacon --port 4444
+
+# Multi-step scenario (runs a full attack chain with pauses between stages)
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --scenario apt_campaign
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --scenario ransomware
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --scenario full_demo
+
+# Interactive menu — pick attacks or scenarios by name/number
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --interactive
+
+# Options: --iface to specify interface, --delay MS for inter-packet pacing
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack dns_tunnel --delay 50
 ```
+
+Available scenarios: `apt_campaign`, `ransomware`, `ddos_wave`, `reflection_ddos`, `insider_threat`, `red_team_recon`, `exposed_databases`, `ics_attack`, `infra_attack`, `full_demo`.
 
 ### `scripts/test_capture.py` — Capture Smoke Test
 Verifies that the sniffer and extractor work correctly on real traffic. Run it while generating some background network activity.
@@ -400,6 +478,7 @@ Every line in `logs/nids.log` is a JSON object. Full schema:
 ```json
 {
   "timestamp":      "2026-04-26T14:32:01.123Z",
+  "id":             "R001",
   "rule":           "Port Scan (SYN)",
   "severity":       "HIGH",
   "src_ip":         "10.0.0.5",
@@ -414,6 +493,7 @@ Every line in `logs/nids.log` is a JSON object. Full schema:
 ```
 
 Field notes:
+- `id` — rule identifier R001–R074, matching the numbering in `signatures.py`; always present
 - `count` — only present on `rate` and `multi_destination` rule alerts; value is the packet/unique-destination count within the window
 - `correlated` — `true` when more than one rule fired on this packet
 - `also_triggered` — names of every other rule that fired alongside the leader
@@ -428,77 +508,53 @@ Field notes:
 # Install dependencies
 bash setup.sh
 
-# Live capture on wlan0 (root required)
-nids --interface wlan0
-
-# Live capture with stats printed every 10 seconds
-nids --interface wlan0 --stats-interval 10
+# Live capture on wlan0 — starts dashboard automatically (root required for capture)
+./nids --interface wlan0
+./nids --interface wlan0 --stats-interval 10
 
 # Verify sniffer + extractor on real traffic (root required)
 sudo .venv/bin/python scripts/test_capture.py
 
-# Generate malicious traffic to validate signatures (root required)
-sudo python scripts/gen_traffic.py --list
+# Generate test traffic to validate signatures (root required)
+sudo python scripts/gen_traffic.py --list                                          # list all 52 attacks
+sudo python scripts/gen_traffic.py --scenarios                                     # list all 10 scenarios
 sudo python scripts/gen_traffic.py --target 192.168.1.5 --attack syn_scan
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --scenario apt_campaign
+sudo python scripts/gen_traffic.py --target 192.168.1.5 --interactive
 
 # Analyze a saved .pcap file offline (no root needed)
 python scripts/replay_pcap.py --file capture.pcap
 python scripts/replay_pcap.py --file capture.pcap --output alerts.json --quiet
 
-# Launch the dashboard (separate terminal, no root needed)
-python -m dashboard.app
+# Launch the live dashboard (no root needed)
+python -m dashboard.app                        # http://localhost:5000
+
+# Launch the standalone PCAP analysis dashboard (no root needed)
+python -m dashboard.pcap_app                   # http://localhost:5001
 ```
 
 ---
 
 ## Deployment (Production)
 
-### systemd Service
-
-```ini
-# /etc/systemd/system/nids.service
-[Unit]
-Description=NIDS — Network Intrusion Detection System
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/nids
-EnvironmentFile=/opt/nids/.env
-ExecStart=/opt/nids/.venv/bin/python main.py --interface eth0
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
+The `deploy/` directory contains ready-to-use systemd units and a logrotate config.
 
 ```bash
+# Copy files to their system locations
+sudo cp /opt/nids/deploy/nids.service          /etc/systemd/system/nids.service
+sudo cp /opt/nids/deploy/nids-dashboard.service /etc/systemd/system/nids-dashboard.service
+sudo cp /opt/nids/deploy/nids-logrotate        /etc/logrotate.d/nids
+
+# Enable and start both services
 sudo systemctl daemon-reload
-sudo systemctl enable --now nids
+sudo systemctl enable --now nids nids-dashboard
+
+# Monitor
 journalctl -u nids -f
+journalctl -u nids-dashboard -f
 ```
 
-### Log Rotation
-
-```
-# /etc/logrotate.d/nids
-/opt/nids/logs/nids.log {
-    daily
-    rotate 30
-    compress
-    missingok
-    notifempty
-    postrotate
-        systemctl kill -s HUP nids
-    endscript
-}
-```
-
-Sends `SIGHUP` after rotation — the logger reopens the file handle without restarting the process (`alerting/logger.py` already handles this).
+Edit `deploy/nids.service` to set the correct `--interface` before deploying. The logrotate config rotates `logs/nids.log` daily (30-day retention) and sends `SIGHUP` after rotation so the logger reopens the new file without a process restart.
 
 ---
 
@@ -516,20 +572,16 @@ Sends `SIGHUP` after rotation — the logger reopens the file handle without res
 ## Future Improvements
 
 **Near-term (operational gaps)**
-- `.env.example` — documented template of all required environment variables
-- systemd service file + logrotate config as committed files (currently documented above but not checked in)
 - Notifier rate-limit — cap notifications-per-hour to prevent email floods during sustained multi-hour attacks
-- IP allowlist in `config.py` — suppress alerts from known-safe hosts (router, monitoring tools)
+- Dashboard authentication — HTTP Basic Auth or token so alert data is not publicly readable
+- HTTPS for dashboard — self-signed cert or Nginx reverse proxy
 
 **Medium-term (capability)**
 - IPv6 support — change BPF filter to `"ip or ip6"` and extend `extractor.py` for IPv6 headers
 - Multi-interface support — one sniffer thread per interface, single shared queue
 - GeoIP enrichment — annotate alerts with country code and ASN from a local MaxMind database
 - SIEM integration — syslog or CEF output format alongside JSON lines
-- Dashboard authentication — HTTP Basic Auth or token so alert data is not publicly readable
-- HTTPS for dashboard — self-signed cert or Nginx reverse proxy
 - Rule hot-reload — `SIGUSR1` handler that reloads `signatures.py` without stopping capture
-- Alert CSV export — download the current filtered view from the dashboard
 
 **Long-term (architectural)**
 - Anomaly detection layer — statistical baseline (e.g. per-IP packet rate EMA) to surface novel attacks no rule covers
