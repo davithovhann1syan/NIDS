@@ -7,10 +7,6 @@ import sys
 import threading
 import time
 
-from dotenv import load_dotenv
-
-load_dotenv()  # load .env into os.environ before config reads it
-
 import allowlist
 import config
 from capture.queue_manager import PacketQueue

@@ -20,9 +20,6 @@ from pathlib import Path
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
-from dotenv import load_dotenv
-load_dotenv()
-
 try:
     from scapy.all import PcapReader
 except ImportError:
